@@ -1,0 +1,25 @@
+name: springboot
+runtime: java
+detect:
+  files:
+    - pom.xml
+    - build.gradle
+    - build.gradle.kts
+  dependencies:
+    - spring-boot
+entrypoint:
+  patterns:
+    - src/main/java/**/Application.java
+inject:
+  bootstrap:
+    file: OtelConfig.java
+  middleware:
+    target: SpringBootApplication
+  logger:
+    supported:
+      - logback
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /actuator/health

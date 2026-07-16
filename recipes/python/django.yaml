@@ -1,0 +1,28 @@
+name: django
+runtime: python
+detect:
+  files:
+    - manage.py
+    - pyproject.toml
+    - requirements.txt
+  dependencies:
+    - django
+entrypoint:
+  patterns:
+    - manage.py
+    - config/wsgi.py
+    - config/asgi.py
+inject:
+  bootstrap:
+    file: extent_instrumentation.py
+  middleware:
+    target: MIDDLEWARE
+  logger:
+    supported:
+      - logging
+      - structlog
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

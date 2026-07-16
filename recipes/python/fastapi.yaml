@@ -1,0 +1,26 @@
+name: fastapi
+runtime: python
+detect:
+  files:
+    - requirements.txt
+    - pyproject.toml
+  dependencies:
+    - fastapi
+entrypoint:
+  patterns:
+    - main.py
+    - app.py
+inject:
+  bootstrap:
+    file: extent_instrumentation.py
+  middleware:
+    target: FastAPI
+  logger:
+    supported:
+      - logging
+      - structlog
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

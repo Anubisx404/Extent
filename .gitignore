@@ -1,0 +1,31 @@
+# Project-local documentation, plans, fixtures, and smoke artifacts
+docs/
+plans/
+baseline_test/
+.smoke/
+assets/
+
+# AI agent local state and scratch directories
+.agents/
+.antigravitycli/
+.claude/
+.codex/
+.gemini/
+.hermes/
+.omg/
+.omx/
+.qwen/
+
+# Extent-generated local state
+.extent/
+.gocache/
+.env.observability
+docker-compose.observability.yml
+otel-collector.yml
+tempo.yml
+loki.yml
+prometheus.yml
+prometheus-alerts.yml
+grafana/
+extent.codemods/
+*.exe

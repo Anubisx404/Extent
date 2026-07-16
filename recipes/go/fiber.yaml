@@ -1,0 +1,25 @@
+name: fiber
+runtime: go
+detect:
+  files:
+    - go.mod
+  dependencies:
+    - github.com/gofiber/fiber
+entrypoint:
+  patterns:
+    - main.go
+    - cmd/*/main.go
+inject:
+  bootstrap:
+    file: internal/observability/otel.go
+  middleware:
+    target: fiber.App.Use
+  logger:
+    supported:
+      - slog
+      - zap
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

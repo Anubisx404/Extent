@@ -1,0 +1,25 @@
+name: fastify
+runtime: node
+detect:
+  files:
+    - package.json
+  dependencies:
+    - fastify
+entrypoint:
+  patterns:
+    - src/index.ts
+    - src/server.ts
+    - server.js
+inject:
+  bootstrap:
+    file: extent.instrumentation.js
+  middleware:
+    target: fastify.addHook
+  logger:
+    supported:
+      - pino
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

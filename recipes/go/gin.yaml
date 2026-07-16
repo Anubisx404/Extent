@@ -1,0 +1,25 @@
+name: gin
+runtime: go
+detect:
+  files:
+    - go.mod
+  dependencies:
+    - github.com/gin-gonic/gin
+entrypoint:
+  patterns:
+    - main.go
+    - cmd/*/main.go
+inject:
+  bootstrap:
+    file: internal/observability/otel.go
+  middleware:
+    target: gin.Engine.Use
+  logger:
+    supported:
+      - slog
+      - zap
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

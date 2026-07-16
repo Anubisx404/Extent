@@ -1,0 +1,27 @@
+name: express
+runtime: node
+detect:
+  files:
+    - package.json
+  dependencies:
+    - express
+entrypoint:
+  patterns:
+    - src/index.ts
+    - src/server.ts
+    - index.js
+    - server.js
+inject:
+  bootstrap:
+    file: extent.instrumentation.js
+  middleware:
+    target: app.use
+  logger:
+    supported:
+      - pino
+      - winston
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

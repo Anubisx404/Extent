@@ -1,0 +1,26 @@
+name: flask
+runtime: python
+detect:
+  files:
+    - requirements.txt
+    - pyproject.toml
+  dependencies:
+    - flask
+entrypoint:
+  patterns:
+    - app.py
+    - main.py
+inject:
+  bootstrap:
+    file: extent_instrumentation.py
+  middleware:
+    target: Flask
+  logger:
+    supported:
+      - logging
+      - structlog
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

@@ -1,0 +1,20 @@
+name: efcore
+runtime: dotnet
+detect:
+  files:
+    - "*.csproj"
+  dependencies:
+    - Microsoft.EntityFrameworkCore
+entrypoint:
+  patterns:
+    - Program.cs
+inject:
+  bootstrap:
+    file: ObservabilityExtensions.cs
+  database:
+    target: EntityFrameworkCore
+metrics:
+  db_latency: true
+  db_pool: true
+verify:
+  request_path: /health

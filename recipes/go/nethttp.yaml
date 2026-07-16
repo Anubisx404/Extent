@@ -1,0 +1,25 @@
+name: nethttp
+runtime: go
+detect:
+  files:
+    - go.mod
+  dependencies:
+    - net/http
+entrypoint:
+  patterns:
+    - main.go
+    - cmd/*/main.go
+inject:
+  bootstrap:
+    file: internal/observability/otel.go
+  middleware:
+    target: http.Handler
+  logger:
+    supported:
+      - slog
+      - zap
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

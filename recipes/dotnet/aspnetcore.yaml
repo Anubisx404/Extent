@@ -1,0 +1,24 @@
+name: aspnetcore
+runtime: dotnet
+detect:
+  files:
+    - "*.csproj"
+  dependencies:
+    - Microsoft.AspNetCore
+entrypoint:
+  patterns:
+    - Program.cs
+inject:
+  bootstrap:
+    file: ObservabilityExtensions.cs
+  middleware:
+    target: WebApplication
+  logger:
+    supported:
+      - serilog
+      - ILogger
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /health

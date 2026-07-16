@@ -1,0 +1,20 @@
+name: hotchocolate
+runtime: dotnet
+detect:
+  files:
+    - "*.csproj"
+  dependencies:
+    - HotChocolate
+entrypoint:
+  patterns:
+    - Program.cs
+inject:
+  bootstrap:
+    file: ObservabilityExtensions.cs
+  graphql:
+    target: HotChocolate
+metrics:
+  http_red: true
+  runtime: true
+verify:
+  request_path: /graphql
