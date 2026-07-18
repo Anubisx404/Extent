@@ -1,5 +1,8 @@
 name: nethttp
 runtime: go
+support:
+  bootstrap: stable
+  deep: unsupported
 detect:
   files:
     - go.mod

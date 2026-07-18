@@ -40,11 +40,11 @@ minutes.
 
 | Feature | Extent Automated | Manual Implementation |
 | :--- | :--- | :--- |
-| **Structural Integrity** | Enforces [OTel Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/) across all languages, ensuring dashboards and alerts work out-of-the-box. | Prone to naming inconsistencies and non-standard attribute mapping. |
-| **Cross-Domain Sync** | Synchronizes app code, OTel Collector config, and Grafana datasources in a single atomic plan. | Requires manual coordination of SDKs, YAML manifests, and PromQL/LogQL queries. |
-| **AST-Based Precision** | Uses Abstract Syntax Tree (AST) patching for deep instrumentation, finding hidden routes and DB calls strings can't match. | Relies on developer memory and manual wrapping of functions/routes. |
+| **Structural Integrity** | Generates bounded OpenTelemetry bootstrap and local LGTM configuration with pinned dependencies for supported targets. | Requires manual version selection and configuration. |
+| **Cross-Domain Sync** | Uses reviewable, transactional changes with ownership checks, exact backups, idempotent apply, and conflict-safe undo. | Requires manual coordination of SDKs and configuration files. |
+| **Source Changes** | Uses syntax-aware Go import/lifecycle edits; Node and Python bootstrap edits are deliberately constrained. Deep codemods remain experimental. | Requires manual source editing. |
 | **Operational Safety** | Includes built-in cardinality safety checks and telemetry quality scoring (`extent score`). | Risk of "Cardinality Explosion" or broken trace context propagation. |
-| **Feedback Loop** | Built-in smoke testing and Prometheus-backed bottleneck reports prove the stack works immediately. | Requires custom traffic generation and manual validation of telemetry flow. |
+| **Feedback Loop** | Service-scoped smoke checks correlate synthetic traffic with Prometheus metrics, Tempo traces, and Loki logs. | Requires custom traffic generation and manual validation. |
 
 ## V1 Status
 
@@ -70,21 +70,25 @@ Implemented:
 - Collector processors for resource enrichment, redaction, memory limiting,
   batching, and tail sampling.
 - Generated `.env.observability` file for app telemetry settings.
-- Instrumentation modes: `zero-code`, `bootstrap`, and `deep`.
-- Source-code bootstrap injection for Node.js CommonJS/ESM, Python entrypoints,
-  and Go entrypoints. Go imports are patched with the standard Go AST.
-- Deep mode codemod bundle generation and optional execution through
-  `instrument --mode deep --apply` for:
-  - TypeScript/JavaScript through a generated `ts-morph` patcher.
-  - Python through a generated LibCST patcher.
-  - .NET through a generated Roslyn patcher.
-  - Java through generated OpenRewrite and JavaParser patchers.
-- Runtime dependency manifest updates for Node and Python projects, including
-  DB-specific OpenTelemetry instrumentation dependencies when supported.
-- Go dependency install planning through `go mod tidy`.
+- Stable `zero-code` and constrained `bootstrap` instrumentation modes for
+  Node.js, Python, and Go. Bootstrap dependencies are pinned and incompatible
+  existing constraints fail before mutation.
+- Node CommonJS/ESM lifecycle, HTTP tracing, metrics, logs, request correlation,
+  and supported database auto-instrumentation.
+- Python Flask/FastAPI lifecycle, traces, metrics, logs, request correlation,
+  and optional supported database instrumentation.
+- Go provider setup, AST-based import/lifecycle injection, dependency
+  reconciliation, and shutdown flushing. Application spans still require Go
+  OpenTelemetry API or framework instrumentation in the target application.
+- `deep` mode is experimental and requires `--experimental`; generated
+  TypeScript, LibCST, Roslyn, OpenRewrite, and JavaParser codemods are not part
+  of the stable V1 support contract.
 - Optional dependency install command execution.
-- Telemetry smoke verification through app traffic plus Prometheus Collector counters.
-- cAdvisor and node_exporter in the generated observability stack.
+- Telemetry smoke verification through app traffic plus service-specific
+  Prometheus, Tempo, and Loki correlation. Collector counters are reported only
+  as supporting global evidence.
+- Portable core stack by default. Linux host/container exporters are available
+  only through the explicit host-metrics profile.
 - Starter Grafana dashboard panels for app latency, DB latency, container CPU,
   container memory, and host CPU.
 - Grafana datasource provisioning for Tempo trace-to-log, trace-to-metric, and
@@ -103,6 +107,10 @@ Implemented:
 
 Not yet implemented:
 
+- Stable bootstrap or zero-code mutation for .NET and Java; these runtimes are
+  detection-only outside experimental deep codemod generation.
+- Stable deep instrumentation for any language.
+- Package-manager publishing or self-update.
 - Svelte local UI.
 - Tauri desktop package.
 - Browser-level Grafana UI click automation. Extent validates generated config,
@@ -147,12 +155,13 @@ Inject OpenTelemetry bootstrap code and dependency manifest updates:
 
 ```powershell
 go run ./cmd/extent instrument --mode bootstrap C:\path\to\repo
+go run ./cmd/extent instrument --mode bootstrap --apply C:\path\to\repo
 go run ./cmd/extent instrument --mode zero-code --dry-run C:\path\to\repo
-go run ./cmd/extent instrument --mode deep --show-diff C:\path\to\repo
-go run ./cmd/extent instrument --mode deep --apply C:\path\to\repo
+go run ./cmd/extent instrument --mode deep --experimental --show-diff C:\path\to\repo
+go run ./cmd/extent instrument --mode deep --experimental --apply C:\path\to\repo
 ```
 
-Deep mode writes `extent.codemods/`, which contains reviewable AST patchers for
+Experimental deep mode writes `extent.codemods/`, which contains reviewable patchers for
 HTTP routes, DB calls, queues, outbound HTTP, business functions, and log
 statements. With `--apply`, Extent runs the detected language codemod commands;
 missing toolchains are reported as command failures instead of being ignored.
@@ -167,7 +176,7 @@ go run ./cmd/extent deps --install C:\path\to\repo
 Start the generated stack from the target repo:
 
 ```powershell
-docker compose -f docker-compose.observability.yml up -d
+go run ./cmd/extent stack up --wait --timeout 2m C:\path\to\repo
 ```
 
 Verify generated files and local tools:
@@ -185,7 +194,7 @@ go run ./cmd/extent verify --url http://localhost:8080/health --prometheus http:
 Send traffic and prove telemetry reached the Collector:
 
 ```powershell
-go run ./cmd/extent smoke --url http://localhost:8080/health --prometheus http://localhost:9090
+go run ./cmd/extent smoke --url http://localhost:8080/health --service checkout --prometheus http://localhost:9090 --tempo http://localhost:3200 --loki http://localhost:3100
 ```
 
 Generate a bottleneck report from Prometheus:
@@ -228,20 +237,23 @@ extent scan [--json] [repo]
 extent analyze [--json] [repo]
 extent plan [--json] [repo]
 extent apply [--branch name] [--force] [--profile name] [repo]
-extent instrument [--mode zero-code|bootstrap|deep] [--dry-run] [--apply] [--undo] [--show-diff] [--json] [repo]
+extent instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]
 extent deps [--install] [repo]
-extent smoke --url app-url [--prometheus url] [--requests n] [--json]
+extent smoke --url app-url --service service-name [--prometheus url] [--tempo url] [--loki url] [--requests n] [--json]
 extent report [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline] [--include-data] [--json] [repo]
 extent baseline [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
 extent cardinality [--json] [repo]
 extent score [--prometheus url] [--json]
-extent stack up|down|status [repo]
+extent stack up [--wait=true] [--timeout 2m] [--project-name name] [repo]
+extent stack down [repo]
+extent stack status [--json] [repo]
 extent verify [--url app-url] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--requests n] [--json] [repo]
 extent doctor [--json] [repo]
 extent version
 ```
 
-`doctor` is an alias for `verify`.
+`doctor` performs static project/tool checks. `verify` performs generated-file
+and endpoint readiness checks, with optional live application requests.
 
 ## Generated Files
 
@@ -272,8 +284,8 @@ The generated stack contains:
 - Tempo for traces.
 - Loki for logs.
 - Prometheus for metrics.
-- cAdvisor for container CPU/memory.
-- node_exporter for host CPU/memory/filesystem signals.
+- Optional cAdvisor and node_exporter services when the generated host-metrics
+  profile is explicitly enabled on a compatible Linux Docker host.
 - Grafana with provisioned datasources and a starter dashboard.
 
 ## Architecture

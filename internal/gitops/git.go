@@ -1,51 +1,70 @@
 package gitops
 
 import (
+	"context"
 	"errors"
-	"os/exec"
+	"fmt"
+	"github.com/Anubisx404/Extent/internal/process"
 	"strings"
 )
 
+type Runner interface {
+	Run(context.Context, string, ...string) process.Result
+}
+
 func EnsureBranch(root, branch string) error {
+	return EnsureBranchContext(context.Background(), process.Runner{Dir: root}, root, branch)
+}
+func EnsureBranchContext(ctx context.Context, r Runner, root, branch string) error {
 	if strings.TrimSpace(branch) == "" {
 		return errors.New("branch name cannot be empty")
 	}
-	if err := run(root, "git", "rev-parse", "--is-inside-work-tree"); err != nil {
-		return err
+	if e := run(ctx, r, root, "git", "rev-parse", "--is-inside-work-tree"); e != nil {
+		return e
 	}
-	if dirty, err := HasUncommittedChanges(root); err != nil {
-		return err
-	} else if dirty {
+	if e := run(ctx, r, root, "git", "check-ref-format", "--branch", branch); e != nil {
+		return fmt.Errorf("invalid branch name: %w", e)
+	}
+	dirty, e := HasUncommittedChangesContext(ctx, r, root)
+	if e != nil {
+		return e
+	}
+	if dirty {
 		return errors.New("working tree has uncommitted changes; commit, stash, or use a clean repo before branch creation")
 	}
-	if branchExists(root, branch) {
-		return run(root, "git", "checkout", branch)
+	exists, err := branchExists(ctx, r, root, branch)
+	if err != nil {
+		return err
 	}
-	return run(root, "git", "checkout", "-b", branch)
+	if exists {
+		return run(ctx, r, root, "git", "checkout", branch)
+	}
+	return run(ctx, r, root, "git", "checkout", "-b", branch)
 }
-
 func HasUncommittedChanges(root string) (bool, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, errors.New(strings.TrimSpace(string(out)))
+	return HasUncommittedChangesContext(context.Background(), process.Runner{Dir: root}, root)
+}
+func HasUncommittedChangesContext(ctx context.Context, r Runner, root string) (bool, error) {
+	res := r.Run(ctx, "git", "status", "--porcelain")
+	if res.Err != nil {
+		return false, res.Err
 	}
-	return strings.TrimSpace(string(out)) != "", nil
+	return strings.TrimSpace(res.Stdout) != "", nil
 }
-
-func branchExists(root, branch string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branch)
-	cmd.Dir = root
-	return cmd.Run() == nil
+func branchExists(ctx context.Context, r Runner, root, branch string) (bool, error) {
+	result := r.Run(ctx, "git", "rev-parse", "--verify", "refs/heads/"+branch)
+	if result.Err == nil {
+		return true, nil
+	}
+	if result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git branch lookup failed: %w", result.Err)
 }
-
-func run(root, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return errors.New(strings.TrimSpace(string(out)))
+func run(ctx context.Context, r Runner, root, n string, a ...string) error {
+	res := r.Run(ctx, n, a...)
+	if res.Err != nil {
+		return fmt.Errorf("%s: %w", n, res.Err)
 	}
 	return nil
 }

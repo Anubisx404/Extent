@@ -1,42 +1,57 @@
 package deps
 
 import (
+	"context"
 	"errors"
-	"os/exec"
-	"strings"
+	"fmt"
+	"github.com/Anubisx404/Extent/internal/process"
 )
 
-func InstallCommand(managers []string) ([]string, bool) {
-	has := map[string]bool{}
-	for _, manager := range managers {
-		has[manager] = true
-	}
-	switch {
-	case has["pnpm"]:
-		return []string{"pnpm", "install"}, true
-	case has["yarn"]:
-		return []string{"yarn", "install"}, true
-	case has["npm"]:
-		return []string{"npm", "install"}, true
-	case has["pip"]:
-		return []string{"python", "-m", "pip", "install", "-r", "requirements.txt"}, true
-	case has["go-modules"]:
-		return []string{"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"}, true
-	default:
-		return nil, false
-	}
+type Runner interface {
+	Run(context.Context, string, ...string) process.Result
 }
 
-func Install(root string, managers []string) ([]string, error) {
-	command, ok := InstallCommand(managers)
-	if !ok {
+func InstallCommand(managers []string) ([]string, bool) {
+	c, err := selectCommand(managers)
+	return c, err == nil
+}
+func selectCommand(managers []string) ([]string, error) {
+	set := map[string]bool{}
+	for _, m := range managers {
+		set[m] = true
+	}
+	var c []string
+	for _, x := range [][]string{{"pnpm", "install"}, {"yarn", "install"}, {"npm", "install"}, {"python", "-m", "pip", "install", "-r", "requirements.txt"}, {"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"}} {
+		key := x[0]
+		if key == "python" {
+			key = "pip"
+		}
+		if key == "go" {
+			key = "go-modules"
+		}
+		if set[key] {
+			if c != nil {
+				return nil, errors.New("ambiguous dependency managers")
+			}
+			c = x
+		}
+	}
+	if c == nil {
 		return nil, errors.New("no supported dependency install command found")
 	}
-	cmd := exec.Command(command[0], command[1:]...)
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return command, errors.New(strings.TrimSpace(string(out)))
+	return c, nil
+}
+func Install(root string, managers []string) ([]string, error) {
+	return InstallContext(context.Background(), process.Runner{Dir: root}, root, managers)
+}
+func InstallContext(ctx context.Context, r Runner, root string, managers []string) ([]string, error) {
+	c, e := selectCommand(managers)
+	if e != nil {
+		return nil, e
 	}
-	return command, nil
+	res := r.Run(ctx, c[0], c[1:]...)
+	if res.Err != nil {
+		return c, fmt.Errorf("dependency install failed: %w", res.Err)
+	}
+	return c, nil
 }

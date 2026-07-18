@@ -3,6 +3,7 @@ package evidence
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -10,17 +11,26 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/search":
-			w.Write([]byte(`{"traces":[{"traceID":"trace-1","rootServiceName":"checkout","rootTraceName":"GET /checkout","durationMs":1800}]}`))
-		case "/api/traces/trace-1":
+			if !strings.Contains(r.URL.Query().Get("q"), `resource.service.name = "checkout"`) {
+				t.Fatalf("unscoped Tempo query: %s", r.URL.RawQuery)
+			}
+			w.Write([]byte(`{"traces":[{"traceID":"0123456789abcdef0123456789abcdef","rootServiceName":"checkout","rootTraceName":"GET /checkout","durationMs":1800}]}`))
+		case "/api/traces/0123456789abcdef0123456789abcdef":
 			w.Write([]byte(`{"batches":[{"scopeSpans":[{"spans":[
-				{"traceID":"trace-1","spanID":"db1","name":"SELECT product_stock","durationNanos":700000000,"attributes":[{"key":"db.system","value":{"stringValue":"postgresql"}},{"key":"db.statement","value":{"stringValue":"SELECT * FROM product_stock WHERE product_id = ?"}}]},
-				{"traceID":"trace-1","spanID":"db2","name":"SELECT product_stock","durationNanos":650000000,"attributes":[{"key":"db.system","value":{"stringValue":"postgresql"}},{"key":"db.statement","value":{"stringValue":"SELECT * FROM product_stock WHERE product_id = ?"}}]},
-				{"traceID":"trace-1","spanID":"http1","name":"GET https://payments.example","durationNanos":200000000,"attributes":[{"key":"http.request.method","value":{"stringValue":"GET"}},{"key":"server.address","value":{"stringValue":"payments.example"}}]},
-				{"traceID":"trace-1","spanID":"queue1","name":"publish checkout","durationNanos":50000000,"attributes":[{"key":"messaging.system","value":{"stringValue":"rabbitmq"}}]}
+				{"traceID":"0123456789abcdef0123456789abcdef","spanID":"db1","name":"SELECT product_stock","durationNanos":700000000,"attributes":[{"key":"db.system","value":{"stringValue":"postgresql"}},{"key":"db.statement","value":{"stringValue":"SELECT * FROM product_stock WHERE product_id = ?"}}]},
+				{"traceID":"0123456789abcdef0123456789abcdef","spanID":"db2","name":"SELECT product_stock","durationNanos":650000000,"attributes":[{"key":"db.system","value":{"stringValue":"postgresql"}},{"key":"db.statement","value":{"stringValue":"SELECT * FROM product_stock WHERE product_id = ?"}}]},
+				{"traceID":"0123456789abcdef0123456789abcdef","spanID":"http1","name":"GET https://payments.example","durationNanos":200000000,"attributes":[{"key":"http.request.method","value":{"stringValue":"GET"}},{"key":"server.address","value":{"stringValue":"payments.example"}}]},
+				{"traceID":"0123456789abcdef0123456789abcdef","spanID":"queue1","name":"publish checkout","durationNanos":50000000,"attributes":[{"key":"messaging.system","value":{"stringValue":"rabbitmq"}}]}
 			]}]}]}`))
 		case "/loki/api/v1/query_range":
+			if !strings.Contains(r.URL.Query().Get("query"), `service_name="checkout"`) {
+				t.Fatalf("unscoped Loki query: %s", r.URL.RawQuery)
+			}
 			w.Write([]byte(`{"status":"success","data":{"result":[{"stream":{"level":"error","service_name":"checkout"},"values":[["1","{\"trace_id\":\"trace-1\",\"span_id\":\"span-1\",\"message\":\"payment failed\"}"]]}]}}`))
 		case "/api/v1/query":
+			if !strings.Contains(r.URL.Query().Get("query"), `service_name="checkout"`) {
+				t.Fatalf("unscoped Prometheus query: %s", r.URL.RawQuery)
+			}
 			w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{"route":"/checkout"},"value":[1,"1.8"]}]}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -28,9 +38,9 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := Collect(Config{PrometheusURL: server.URL, LokiURL: server.URL, TempoURL: server.URL, Window: "30m"})
+	result := Collect(Config{PrometheusURL: server.URL, LokiURL: server.URL, TempoURL: server.URL, Window: "30m", ServiceName: "checkout"})
 
-	if len(result.Traces) != 1 || result.Traces[0].TraceID != "trace-1" {
+	if len(result.Traces) != 1 || result.Traces[0].TraceID != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("expected trace evidence, got %#v", result.Traces)
 	}
 	if len(result.LogAnomalies) != 1 || result.LogAnomalies[0].TraceID != "trace-1" {
@@ -50,5 +60,8 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 	}
 	if len(result.QueueFindings) != 1 || result.QueueFindings[0].System != "rabbitmq" {
 		t.Fatalf("expected queue evidence, got %#v", result.QueueFindings)
+	}
+	if len(result.Provenance) != 3 {
+		t.Fatalf("expected source provenance, got %#v", result.Provenance)
 	}
 }

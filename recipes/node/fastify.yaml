@@ -1,5 +1,8 @@
 name: fastify
 runtime: node
+support:
+  bootstrap: stable
+  deep: experimental
 detect:
   files:
     - package.json

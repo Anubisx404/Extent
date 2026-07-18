@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,20 +10,27 @@ import (
 )
 
 type Result struct {
-	Root              string   `json:"root"`
-	Runtimes          []string `json:"runtimes"`
-	Frameworks        []string `json:"frameworks"`
-	PackageManagers   []string `json:"packageManagers"`
-	DatabaseLibraries []string `json:"databaseLibraries"`
-	ComposeFiles      []string `json:"composeFiles"`
-	Entrypoints       []string `json:"entrypoints"`
-	Signals           []Signal `json:"signals"`
+	Root              string    `json:"root"`
+	Runtimes          []string  `json:"runtimes"`
+	Frameworks        []string  `json:"frameworks"`
+	PackageManagers   []string  `json:"packageManagers"`
+	DatabaseLibraries []string  `json:"databaseLibraries"`
+	ComposeFiles      []string  `json:"composeFiles"`
+	Entrypoints       []string  `json:"entrypoints"`
+	Signals           []Signal  `json:"signals"`
+	Warnings          []Warning `json:"warnings,omitempty"`
 }
 
 type Signal struct {
 	Kind  string `json:"kind"`
 	Path  string `json:"path"`
 	Value string `json:"value,omitempty"`
+}
+
+type Warning struct {
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	Detail string `json:"detail"`
 }
 
 func Scan(root string) (Result, error) {
@@ -55,7 +63,9 @@ func Scan(root string) (Result, error) {
 			packageManagers["npm"] = true
 			result.Signals = append(result.Signals, Signal{Kind: "runtime", Path: rel, Value: "node"})
 			result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: rel, Value: "npm"})
-			addPackageSignals(path, rel, frameworks, databaseLibraries, &result)
+			if err := addPackageSignals(path, rel, frameworks, databaseLibraries, &result); err != nil {
+				result.Warnings = append(result.Warnings, Warning{Kind: "manifest", Path: rel, Detail: err.Error()})
+			}
 		case base == "package-lock.json":
 			packageManagers["npm"] = true
 			result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: rel, Value: "npm"})
@@ -122,12 +132,20 @@ func Scan(root string) (Result, error) {
 }
 
 func shouldSkipDir(name string) bool {
-	switch strings.ToLower(name) {
-	case ".git", ".extent", ".gocache", ".smoke", "node_modules", "vendor", "bin", "obj", ".venv", "venv", "dist", "build", ".next":
-		return true
-	default:
-		return false
+	return IsExcludedDir(name)
+}
+
+var excludedDirs = []string{".git", ".extent", ".gocache", ".smoke", "extent.codemods", ".extent-backup", "docs", "plans", "baseline_test", "node_modules", "vendor", "bin", "obj", ".venv", "venv", "dist", "build", ".next", ".agents", ".aider", ".antigravitycli", ".claude", ".cline", ".cody", ".codex", ".continue", ".cursor", ".gemini", ".hermes", ".omg", ".omx", ".opencode", ".qwen", ".sweep", ".windsurf", "ai-plans", "agent-plans"}
+
+func DefaultExcludedDirs() []string { return append([]string(nil), excludedDirs...) }
+func IsExcludedDir(name string) bool {
+	name = strings.ToLower(name)
+	for _, excluded := range excludedDirs {
+		if name == excluded {
+			return true
+		}
 	}
+	return false
 }
 
 func isComposeFile(name string) bool {
@@ -146,17 +164,17 @@ func isLikelyEntrypoint(name string) bool {
 	}
 }
 
-func addPackageSignals(path, rel string, frameworks, databaseLibraries map[string]bool, result *Result) {
+func addPackageSignals(path, rel string, frameworks, databaseLibraries map[string]bool, result *Result) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return fmt.Errorf("read package manifest: %w", err)
 	}
 	var pkg struct {
 		Dependencies    map[string]string `json:"dependencies"`
 		DevDependencies map[string]string `json:"devDependencies"`
 	}
-	if json.Unmarshal(data, &pkg) != nil {
-		return
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return fmt.Errorf("parse package manifest: %w", err)
 	}
 	deps := map[string]string{}
 	for k, v := range pkg.Dependencies {
@@ -198,6 +216,7 @@ func addPackageSignals(path, rel string, frameworks, databaseLibraries map[strin
 			result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: database})
 		}
 	}
+	return nil
 }
 
 func addTextFrameworkSignals(path, rel string, frameworks, databaseLibraries map[string]bool, result *Result) {

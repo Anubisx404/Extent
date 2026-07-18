@@ -3,7 +3,7 @@ package planner
 import (
 	"testing"
 
-	"extent/internal/scanner"
+	"github.com/Anubisx404/Extent/internal/scanner"
 )
 
 func TestBuildIncludesCoreObservabilityChanges(t *testing.T) {

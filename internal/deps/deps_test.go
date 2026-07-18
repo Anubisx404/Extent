@@ -1,8 +1,11 @@
 package deps
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/Anubisx404/Extent/internal/process"
 )
 
 func TestInstallCommandForPackageManagers(t *testing.T) {
@@ -44,5 +47,42 @@ func TestInstallCommandForGoAddsOpenTelemetryPackages(t *testing.T) {
 	joined := strings.Join(command, " ")
 	if !strings.Contains(joined, "go get") || !strings.Contains(joined, "go.opentelemetry.io/otel") {
 		t.Fatalf("expected go get OpenTelemetry command, got %q", joined)
+	}
+}
+
+type fakeRunner struct {
+	result process.Result
+	name   string
+	args   []string
+}
+
+func (runner *fakeRunner) Run(_ context.Context, name string, args ...string) process.Result {
+	runner.name = name
+	runner.args = append([]string(nil), args...)
+	return runner.result
+}
+
+func TestSelectCommandRejectsAmbiguousManagers(t *testing.T) {
+	if _, err := selectCommand([]string{"npm", "pnpm"}); err == nil {
+		t.Fatal("accepted ambiguous dependency managers")
+	}
+	if command, ok := InstallCommand([]string{"npm", "pnpm"}); ok || command != nil {
+		t.Fatalf("ambiguous command = %#v, %v", command, ok)
+	}
+}
+
+func TestInstallContextUsesDirectArgvAndPropagatesFailure(t *testing.T) {
+	runner := &fakeRunner{result: process.Result{ExitCode: 0}}
+	command, err := InstallContext(context.Background(), runner, t.TempDir(), []string{"npm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(command, " ") != "npm install" || runner.name != "npm" || strings.Join(runner.args, " ") != "install" {
+		t.Fatalf("command=%#v runner=%s %#v", command, runner.name, runner.args)
+	}
+
+	runner.result = process.Result{ExitCode: 9, Err: context.DeadlineExceeded, TimedOut: true}
+	if _, err := InstallContext(context.Background(), runner, t.TempDir(), []string{"npm"}); err == nil {
+		t.Fatal("dependency process failure was ignored")
 	}
 }

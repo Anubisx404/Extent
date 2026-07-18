@@ -91,7 +91,8 @@ func main() {
 
 	assertChanged(t, result, "main.go")
 	assertChanged(t, result, "internal/observability/otel.go")
-	assertFileContains(t, filepath.Join(root, "main.go"), `_ "example.com/payments/internal/observability"`)
+	assertFileContains(t, filepath.Join(root, "main.go"), `extentotel "example.com/payments/internal/observability"`)
+	assertFileContains(t, filepath.Join(root, "main.go"), "defer extentotel.Shutdown()")
 	assertFileContains(t, filepath.Join(root, "internal/observability/otel.go"), "otlptracehttp")
 
 	second, err := Instrument(root, Options{})

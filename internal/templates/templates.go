@@ -8,22 +8,48 @@ import (
 	"sort"
 	"strings"
 
-	"extent/internal/planner"
+	"github.com/Anubisx404/Extent/internal/config"
+	"github.com/Anubisx404/Extent/internal/fileops"
+	"github.com/Anubisx404/Extent/internal/planner"
+	"github.com/Anubisx404/Extent/internal/stack"
 )
 
 type WriteOptions struct {
-	Overwrite bool
-	Profile   string
-	Contract  string
+	Overwrite         bool
+	ContractOverwrite bool
+	Profile           string
+	Contract          string
 }
 
 func WriteLGTM(root string, plan planner.Plan, opts WriteOptions) ([]string, error) {
+	transaction, err := PlanLGTM(root, plan, opts)
+	if err != nil {
+		return nil, err
+	}
+	_, err = fileops.Apply(transaction)
+	if err != nil {
+		return nil, err
+	}
+	written := make([]string, 0, len(transaction.Steps))
+	for _, step := range transaction.Steps {
+		written = append(written, step.Path)
+	}
+	return written, nil
+}
+
+// PlanLGTM renders and preflights the complete stack without mutating the project.
+func PlanLGTM(root string, plan planner.Plan, opts WriteOptions) (fileops.Plan, error) {
+	profile := strings.ToLower(strings.TrimSpace(opts.Profile))
+	resolved, err := stack.ResolveProfile(profile)
+	if err != nil {
+		return fileops.Plan{}, err
+	}
 	files := map[string]string{
-		"docker-compose.observability.yml": composeYAML,
-		"otel-collector.yml":               collectorYAMLForProfile(opts.Profile),
+		"docker-compose.observability.yml": composeYAMLForProfile(resolved),
+		"otel-collector.yml":               collectorYAMLForProfile(profile),
 		"tempo.yml":                        tempoYAML,
 		"loki.yml":                         lokiYAML,
-		"prometheus.yml":                   prometheusYAML,
+		"prometheus.yml":                   prometheusYAMLForProfile(resolved),
 		"prometheus-alerts.yml":            prometheusAlertsYAML,
 		"extent.yaml":                      contractOrDefault(plan, opts.Contract),
 		".env.observability":               envObservability,
@@ -35,7 +61,7 @@ func WriteLGTM(root string, plan planner.Plan, opts WriteOptions) ([]string, err
 
 	planBytes, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
-		return nil, err
+		return fileops.Plan{}, err
 	}
 	files[".extent/plan.json"] = string(planBytes) + "\n"
 
@@ -45,28 +71,29 @@ func WriteLGTM(root string, plan planner.Plan, opts WriteOptions) ([]string, err
 	}
 	sort.Strings(paths)
 
-	if !opts.Overwrite {
-		for _, rel := range paths {
-			target := filepath.Join(root, filepath.FromSlash(rel))
-			if _, err := os.Stat(target); err == nil {
-				return nil, errors.New("refusing to overwrite existing file: " + rel)
-			}
-		}
-	}
-
-	written := make([]string, 0, len(paths))
+	steps := make([]fileops.Step, 0, len(paths))
 	for _, rel := range paths {
 		content := files[rel]
+		if content == "" {
+			return fileops.Plan{}, errors.New("empty generated output: " + rel)
+		}
 		target := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return nil, err
+		action := fileops.Create
+		if existing, readErr := os.ReadFile(target); readErr == nil {
+			if string(existing) == content {
+				continue
+			}
+			authorized := opts.Overwrite || rel == "extent.yaml" && opts.ContractOverwrite
+			if !authorized {
+				return fileops.Plan{}, errors.New("refusing to overwrite existing file: " + rel)
+			}
+			action = fileops.Update
+		} else if !os.IsNotExist(readErr) {
+			return fileops.Plan{}, readErr
 		}
-		if err := os.WriteFile(target, []byte(content), 0644); err != nil {
-			return nil, err
-		}
-		written = append(written, rel)
+		steps = append(steps, fileops.Step{Path: rel, Action: action, Data: []byte(content), Mode: 0644})
 	}
-	return written, nil
+	return fileops.NewPlan(root, "stack-config", steps)
 }
 
 func reportMarkdown(plan planner.Plan) string {
@@ -108,6 +135,11 @@ const composeYAML = `services:
       - prometheus
       - cadvisor
       - node-exporter
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otel-collector.yml"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   grafana:
     image: grafana/grafana:11.0.0
@@ -120,14 +152,25 @@ const composeYAML = `services:
       - prometheus
       - loki
       - tempo
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   tempo:
     image: grafana/tempo:2.5.0
+    user: "0:0"
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./tempo.yml:/etc/tempo.yaml:ro
     ports:
       - "3200:3200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3200/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   loki:
     image: grafana/loki:3.0.0
@@ -136,6 +179,11 @@ const composeYAML = `services:
       - ./loki.yml:/etc/loki/local-config.yaml:ro
     ports:
       - "3100:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   prometheus:
     image: prom/prometheus:v2.52.0
@@ -147,6 +195,11 @@ const composeYAML = `services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--web.enable-remote-write-receiver"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/ready >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
@@ -168,6 +221,37 @@ const composeYAML = `services:
     volumes:
       - /:/host:ro,rslave
 `
+
+func composeYAMLForProfile(profile stack.ProfileConfig) string {
+	base := composeYAML
+	if !profile.HostMetrics {
+		base = base[:strings.Index(base, "  cadvisor:\n")]
+	}
+	for original, loopback := range map[string]string{
+		`"4317:4317"`: `"127.0.0.1:4317:4317"`,
+		`"4318:4318"`: `"127.0.0.1:4318:4318"`,
+		`"3000:3000"`: `"127.0.0.1:3000:3000"`,
+		`"3200:3200"`: `"127.0.0.1:3200:3200"`,
+		`"3100:3100"`: `"127.0.0.1:3100:3100"`,
+		`"9090:9090"`: `"127.0.0.1:9090:9090"`,
+		`"8088:8080"`: `"127.0.0.1:8088:8080"`,
+		`"9100:9100"`: `"127.0.0.1:9100:9100"`,
+	} {
+		base = strings.ReplaceAll(base, original, loopback)
+	}
+	if profile.Persistent {
+		base = strings.ReplaceAll(base, "      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro", "      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro\n      - grafana-data:/var/lib/grafana")
+		base = strings.ReplaceAll(base, "      - ./tempo.yml:/etc/tempo.yaml:ro", "      - ./tempo.yml:/etc/tempo.yaml:ro\n      - tempo-data:/tmp/tempo")
+		base = strings.ReplaceAll(base, "      - ./loki.yml:/etc/loki/local-config.yaml:ro", "      - ./loki.yml:/etc/loki/local-config.yaml:ro\n      - loki-data:/loki")
+		base = strings.ReplaceAll(base, "      - ./prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro", "      - ./prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro\n      - prometheus-data:/prometheus")
+		base += "\nvolumes:\n  grafana-data:\n  tempo-data:\n  loki-data:\n  prometheus-data:\n"
+	}
+	if !profile.HostMetrics {
+		base = strings.ReplaceAll(base, "      - cadvisor\n", "")
+		base = strings.ReplaceAll(base, "      - node-exporter\n", "")
+	}
+	return base
+}
 
 const collectorYAML = `receivers:
   otlp:
@@ -209,6 +293,8 @@ processors:
         type: latency
         latency:
           threshold_ms: 500
+      - name: keep-all
+        type: always_sample
   batch:
 
 exporters:
@@ -220,6 +306,8 @@ exporters:
     endpoint: http://loki:3100/otlp
   prometheus:
     endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true
 
 service:
   pipelines:
@@ -267,6 +355,8 @@ exporters:
       insecure: true
   prometheus:
     endpoint: 0.0.0.0:9464
+    resource_to_telemetry_conversion:
+      enabled: true
 
 service:
   pipelines:
@@ -361,12 +451,15 @@ limits_config:
 `
 
 const prometheusYAML = `global:
-  scrape_interval: 15s
+  scrape_interval: 5s
 rule_files:
   - /etc/prometheus/prometheus-alerts.yml
 
 scrape_configs:
-  - job_name: otel-collector
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ["otel-collector:8888"]
+  - job_name: otlp-metrics
     static_configs:
       - targets: ["otel-collector:9464"]
   - job_name: cadvisor
@@ -377,49 +470,23 @@ scrape_configs:
       - targets: ["node-exporter:9100"]
 `
 
+func prometheusYAMLForProfile(profile stack.ProfileConfig) string {
+	if profile.HostMetrics {
+		return prometheusYAML
+	}
+	return prometheusYAML[:strings.Index(prometheusYAML, "  - job_name: cadvisor\n")]
+}
+
 func contractOrDefault(plan planner.Plan, contract string) string {
 	if contract != "" {
 		return contract
 	}
-	service := "app"
+	c := config.Defaults()
 	if plan.Root != "" {
-		service = filepath.Base(plan.Root)
+		c.Service.Name = filepath.Base(plan.Root)
 	}
-	return `# Generated by Extent. Edit intentionally; Extent treats this as the observability contract.
-service:
-  name: ` + service + `
-  namespace: local
-  environment: development
-
-signals:
-  traces: true
-  metrics: true
-  logs: true
-
-instrumentation:
-  http: true
-  database: true
-  redis: true
-  queues: true
-  external_http: true
-  logs_correlation: true
-
-slo:
-  http_latency_p95_ms: 300
-  error_rate_percent: 1
-  availability_percent: 99.5
-
-sampling:
-  local: always_on
-  heavy_load: tail_sampling
-
-redaction:
-  headers:
-    - authorization
-    - cookie
-  db_statement: sanitize
-  request_body: disabled
-`
+	b, _ := config.Marshal(c)
+	return "# Generated by Extent. Edit intentionally; Extent treats this as the observability contract.\n" + string(b)
 }
 
 const prometheusAlertsYAML = `groups:

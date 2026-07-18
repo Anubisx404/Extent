@@ -1,16 +1,18 @@
 package verifier
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Anubisx404/Extent/internal/observability"
+	"github.com/Anubisx404/Extent/internal/smoke"
 )
 
 type Config struct {
@@ -20,6 +22,7 @@ type Config struct {
 	LokiURL       string
 	TempoURL      string
 	GrafanaURL    string
+	ServiceName   string
 	Requests      int
 }
 
@@ -87,96 +90,31 @@ func stackChecks(config Config) []Check {
 	if config.Requests <= 0 {
 		config.Requests = 3
 	}
+	smokeReport := smoke.Run(smoke.Config{URL: config.URL, PrometheusURL: config.PrometheusURL, TempoURL: config.TempoURL, ServiceName: config.ServiceName, Requests: config.Requests})
+	checks := make([]Check, 0, len(smokeReport.Checks)+2)
+	for _, evidence := range smokeReport.Checks {
+		detail := evidence.Detail
+		if evidence.Scope != "" {
+			detail = "[" + evidence.Scope + "/" + evidence.Status + "] " + detail
+		}
+		checks = append(checks, Check{Name: evidence.Name, OK: evidence.OK, Detail: detail})
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	checks := []Check{requestCheck(client, config.URL, config.Requests)}
-	checks = append(checks,
-		prometheusCheck(client, config.PrometheusURL, "Prometheus received traces", "sum(otelcol_receiver_accepted_spans)"),
-		prometheusCheck(client, config.PrometheusURL, "Prometheus received logs", "sum(otelcol_receiver_accepted_log_records)"),
-		prometheusCheck(client, config.PrometheusURL, "Prometheus received metrics", "sum(otelcol_receiver_accepted_metric_points)"),
-		readyCheck(client, config.LokiURL, "Loki ready"),
-		readyCheck(client, config.TempoURL, "Tempo ready"),
-	)
+	checks = append(checks, readyCheck(client, config.LokiURL, "Loki ready"), readyCheck(client, config.TempoURL, "Tempo ready"))
 	return checks
 }
 
-func requestCheck(client *http.Client, target string, count int) Check {
-	for i := 0; i < count; i++ {
-		resp, err := client.Get(target)
-		if err != nil {
-			return Check{Name: "synthetic app requests", OK: false, Detail: err.Error()}
-		}
-		resp.Body.Close()
-		if resp.StatusCode >= 500 {
-			return Check{Name: "synthetic app requests", OK: false, Detail: fmt.Sprintf("request returned %s", resp.Status)}
-		}
-	}
-	return Check{Name: "synthetic app requests", OK: true, Detail: fmt.Sprintf("%d request(s)", count)}
-}
-
 func readyCheck(client *http.Client, baseURL, name string) Check {
-	endpoint, err := url.Parse(baseURL)
+	endpoint, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return Check{Name: name, OK: false, Detail: err.Error()}
 	}
-	endpoint.Path = "/ready"
-	resp, err := client.Get(endpoint.String())
+	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
+	_, err = bounded.Do(context.Background(), http.MethodGet, endpoint, "/ready", nil, nil)
 	if err != nil {
 		return Check{Name: name, OK: false, Detail: err.Error()}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Check{Name: name, OK: false, Detail: resp.Status}
 	}
 	return Check{Name: name, OK: true}
-}
-
-func prometheusCheck(client *http.Client, baseURL, name, expr string) Check {
-	value, err := queryPrometheus(client, baseURL, expr)
-	if err != nil {
-		return Check{Name: name, OK: false, Detail: err.Error()}
-	}
-	if value <= 0 {
-		return Check{Name: name, OK: false, Detail: "no samples found"}
-	}
-	return Check{Name: name, OK: true, Detail: fmt.Sprintf("%.0f sample(s)", value)}
-}
-
-func queryPrometheus(client *http.Client, baseURL, expr string) (float64, error) {
-	endpoint, err := url.Parse(baseURL)
-	if err != nil {
-		return 0, err
-	}
-	endpoint.Path = "/api/v1/query"
-	values := endpoint.Query()
-	values.Set("query", expr)
-	endpoint.RawQuery = values.Encode()
-	resp, err := client.Get(endpoint.String())
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("prometheus returned %s", resp.Status)
-	}
-	var payload struct {
-		Status string `json:"status"`
-		Data   struct {
-			Result []struct {
-				Value []any `json:"value"`
-			} `json:"result"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return 0, err
-	}
-	if payload.Status != "success" || len(payload.Data.Result) == 0 || len(payload.Data.Result[0].Value) < 2 {
-		return 0, nil
-	}
-	raw, ok := payload.Data.Result[0].Value[1].(string)
-	if !ok {
-		return 0, nil
-	}
-	return strconv.ParseFloat(raw, 64)
 }
 
 func fileCheck(root, rel string) Check {
@@ -216,19 +154,15 @@ func grafanaCorrelationCheck(root string) Check {
 }
 
 func grafanaAPICorrelationCheck(baseURL string) Check {
-	endpoint, err := url.Parse(baseURL)
+	endpoint, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
-	endpoint.Path = "/api/datasources/uid/tempo"
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(endpoint.String())
+	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
+	resp, err := bounded.Do(context.Background(), http.MethodGet, endpoint, "/api/datasources/uid/tempo", nil, nil)
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: resp.Status}
 	}
 	var payload struct {
 		JSONData struct {
@@ -245,7 +179,7 @@ func grafanaAPICorrelationCheck(baseURL string) Check {
 			} `json:"serviceMap"`
 		} `json:"jsonData"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(resp.Body)).Decode(&payload); err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
 	if payload.JSONData.TracesToLogsV2.DatasourceUID != "loki" ||

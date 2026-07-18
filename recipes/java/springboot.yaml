@@ -1,5 +1,8 @@
 name: springboot
 runtime: java
+support:
+  bootstrap: unsupported
+  deep: experimental
 detect:
   files:
     - pom.xml

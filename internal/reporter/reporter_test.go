@@ -7,12 +7,17 @@ import (
 	"testing"
 )
 
-func TestBuildReportIdentifiesDatabaseDominatedPath(t *testing.T) {
+func TestBuildReportUsesServiceScopedMeasurementsWithoutInventingDBShare(t *testing.T) {
 	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("query")
+		if strings.Contains(query, "http_server_request_duration") || strings.Contains(query, "db_client_operation_duration") {
+			if !strings.Contains(query, `service_name="checkout"`) {
+				t.Fatalf("unscoped service query: %s", query)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(query, "http_server_duration"):
+		case strings.Contains(query, "http_server_request_duration"):
 			w.Write([]byte(prometheusVector("route", "/checkout", "1.2")))
 		case strings.Contains(query, "db_client_operation_duration"):
 			w.Write([]byte(prometheusScalar("0.96")))
@@ -26,15 +31,18 @@ func TestBuildReportIdentifiesDatabaseDominatedPath(t *testing.T) {
 	}))
 	defer prom.Close()
 
-	report := Build(Config{PrometheusURL: prom.URL})
+	report := Build(Config{PrometheusURL: prom.URL, ServiceName: "checkout", Window: "30m"})
 	if !report.OK {
 		t.Fatalf("expected report OK, got %#v", report)
 	}
 	if report.SlowestPath != "/checkout" {
 		t.Fatalf("expected /checkout, got %q", report.SlowestPath)
 	}
-	if !strings.Contains(report.Summary, "database dominated") {
-		t.Fatalf("expected database dominated summary, got %q", report.Summary)
+	if strings.Contains(report.Summary, "database dominated") || report.DBShare != 0 {
+		t.Fatalf("dimensionally incompatible DB ratio was inferred: %#v", report)
+	}
+	if report.Measurements["httpP95"].Status != "measured" || report.Measurements["httpP95"].Scope != "target" {
+		t.Fatalf("measurement metadata = %#v", report.Measurements)
 	}
 }
 

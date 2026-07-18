@@ -1,5 +1,8 @@
 name: django
 runtime: python
+support:
+  bootstrap: stable
+  deep: experimental
 detect:
   files:
     - manage.py

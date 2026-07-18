@@ -1,5 +1,8 @@
 name: aspnetcore
 runtime: dotnet
+support:
+  bootstrap: unsupported
+  deep: experimental
 detect:
   files:
     - "*.csproj"

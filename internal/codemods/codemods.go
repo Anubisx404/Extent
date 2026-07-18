@@ -2,9 +2,14 @@ package codemods
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/Anubisx404/Extent/internal/fileops"
+	"github.com/Anubisx404/Extent/internal/state"
 )
 
 type Bundle struct {
@@ -48,27 +53,56 @@ func BuildBundle() Bundle {
 }
 
 func Write(root string, overwrite bool) ([]string, error) {
+	plan, err := PlanBundle(root, overwrite)
+	if err != nil {
+		return nil, err
+	}
+	beforeCount := 0
+	if existing, loadErr := state.Load(root); loadErr == nil {
+		beforeCount = len(existing.Operations)
+	}
+	manifest, err := fileops.Apply(plan)
+	if err != nil {
+		return nil, err
+	}
+	if len(manifest.Operations) <= beforeCount {
+		return []string{}, nil
+	}
+	operation := manifest.Operations[len(manifest.Operations)-1]
+	paths := make([]string, 0, len(operation.Entries))
+	for _, entry := range operation.Entries {
+		paths = append(paths, strings.ReplaceAll(entry.Path, string(filepath.Separator), "/"))
+	}
+	return paths, nil
+}
+
+// PlanBundle builds a deterministic transactional fileops plan. Bundle writes
+// are deliberately isolated from arbitrary source codemod mutations.
+func PlanBundle(root string, overwrite bool) (fileops.Plan, error) {
 	bundle := BuildBundle()
 	paths := make([]string, 0, len(bundle.Files))
 	for rel := range bundle.Files {
 		paths = append(paths, rel)
 	}
 	sort.Strings(paths)
+	steps := make([]fileops.Step, 0, len(paths))
 	for _, rel := range paths {
+		action := fileops.Create
 		target := filepath.Join(root, filepath.FromSlash(rel))
-		if !overwrite {
-			if _, err := os.Stat(target); err == nil {
-				continue
+		info, err := os.Lstat(target)
+		if err == nil {
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return fileops.Plan{}, fmt.Errorf("unsafe codemod bundle target: %s", rel)
 			}
+			if overwrite {
+				action = fileops.Update
+			}
+		} else if !os.IsNotExist(err) {
+			return fileops.Plan{}, err
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(target, []byte(bundle.Files[rel]), 0644); err != nil {
-			return nil, err
-		}
+		steps = append(steps, fileops.Step{Path: rel, Action: action, Data: []byte(bundle.Files[rel]), Mode: 0644})
 	}
-	return paths, nil
+	return fileops.NewPlan(root, "codemod-bundle", steps)
 }
 
 const readme = `# Extent Deep Codemods

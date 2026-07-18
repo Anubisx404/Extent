@@ -1,5 +1,8 @@
 name: fastapi
 runtime: python
+support:
+  bootstrap: stable
+  deep: experimental
 detect:
   files:
     - requirements.txt

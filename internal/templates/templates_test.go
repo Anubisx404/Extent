@@ -1,12 +1,15 @@
 package templates
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"extent/internal/planner"
+	"github.com/Anubisx404/Extent/internal/fileops"
+	"github.com/Anubisx404/Extent/internal/planner"
+	"github.com/Anubisx404/Extent/internal/state"
 )
 
 func TestWriteLGTMWritesV1FileSet(t *testing.T) {
@@ -43,17 +46,33 @@ func TestWriteLGTMWritesV1FileSet(t *testing.T) {
 	}
 }
 
-func TestWriteLGTMIncludesInfrastructureExportersAndDashboards(t *testing.T) {
+func TestWriteLGTMDefaultIsPortablePersistentAndLoopbackOnly(t *testing.T) {
 	root := t.TempDir()
 	_, err := WriteLGTM(root, planner.Plan{Root: root}, WriteOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assertFileContains(t, filepath.Join(root, "docker-compose.observability.yml"), "cadvisor:")
-	assertFileContains(t, filepath.Join(root, "docker-compose.observability.yml"), "node-exporter:")
-	assertFileContains(t, filepath.Join(root, "prometheus.yml"), "cadvisor:8080")
-	assertFileContains(t, filepath.Join(root, "prometheus.yml"), "node-exporter:9100")
+	compose := mustRead(t, filepath.Join(root, "docker-compose.observability.yml"))
+	for _, forbidden := range []string{"cadvisor:", "node-exporter:", "privileged: true", `- "/:`} {
+		if strings.Contains(compose, forbidden) {
+			t.Fatalf("portable default contains %q:\n%s", forbidden, compose)
+		}
+	}
+	for _, required := range []string{"127.0.0.1:4317:4317", "127.0.0.1:3000:3000", "grafana-data:/var/lib/grafana", "./grafana/dashboards:/var/lib/grafana/dashboards:ro", "healthcheck:", `user: "0:0"`} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("portable default missing %q:\n%s", required, compose)
+		}
+	}
+	prometheus := mustRead(t, filepath.Join(root, "prometheus.yml"))
+	if strings.Contains(prometheus, "cadvisor:8080") || strings.Contains(prometheus, "node-exporter:9100") {
+		t.Fatalf("portable Prometheus config contains host targets:\n%s", prometheus)
+	}
+	for _, required := range []string{`targets: ["otel-collector:8888"]`, `targets: ["otel-collector:9464"]`} {
+		if !strings.Contains(prometheus, required) {
+			t.Fatalf("Prometheus config missing %q:\n%s", required, prometheus)
+		}
+	}
 	assertFileContains(t, filepath.Join(root, "grafana/dashboards/service-overview.json"), "Container CPU")
 	assertFileContains(t, filepath.Join(root, "grafana/dashboards/service-overview.json"), "Host CPU")
 }
@@ -74,6 +93,56 @@ func TestWriteLGTMRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestPlanLGTMValidatesProfilesWithoutMutation(t *testing.T) {
+	root := t.TempDir()
+	if _, err := PlanLGTM(root, planner.Plan{Root: root}, WriteOptions{Profile: "full"}); err != nil {
+		t.Fatalf("full profile rejected: %v", err)
+	}
+	if _, err := PlanLGTM(root, planner.Plan{Root: root}, WriteOptions{Profile: "invalid"}); err == nil {
+		t.Fatal("invalid profile accepted")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".extent")); !os.IsNotExist(err) {
+		t.Fatalf("planning mutated project: %v", err)
+	}
+}
+
+func TestWriteLGTMIsIdempotentAndUndoRestoresExactBytes(t *testing.T) {
+	root := t.TempDir()
+	original := []byte("user collector config\n")
+	collector := filepath.Join(root, "otel-collector.yml")
+	if err := os.WriteFile(collector, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	plan := planner.Plan{Root: root, Detected: []string{"runtime:go"}}
+	options := WriteOptions{Profile: "full", Overwrite: true}
+	if _, err := WriteLGTM(root, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteLGTM(root, plan, options); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := state.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Operations) != 1 {
+		t.Fatalf("idempotent apply recorded %d operations", len(manifest.Operations))
+	}
+	if err := fileops.UndoKind(root, "stack-config"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(collector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, original) {
+		t.Fatalf("restored bytes = %q", restored)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docker-compose.observability.yml")); !os.IsNotExist(err) {
+		t.Fatalf("created file survived undo: %v", err)
+	}
+}
+
 func assertFileContains(t *testing.T, path, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -83,4 +152,13 @@ func assertFileContains(t *testing.T, path, want string) {
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got:\n%s", path, want, string(data))
 	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

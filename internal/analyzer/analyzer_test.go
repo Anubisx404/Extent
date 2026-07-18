@@ -50,6 +50,18 @@ services:
 	}
 }
 
+func TestAnalyzePropagatesScanWarnings(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "package.json"), `{not-json`)
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Path != "package.json" {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -69,4 +81,3 @@ func assertContains(t *testing.T, values []string, want string) {
 	}
 	t.Fatalf("expected %q in %#v", want, values)
 }
-

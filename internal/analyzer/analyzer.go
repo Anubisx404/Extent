@@ -8,23 +8,24 @@ import (
 	"sort"
 	"strings"
 
-	"extent/internal/scanner"
+	"github.com/Anubisx404/Extent/internal/scanner"
 )
 
 type Result struct {
-	Root                string      `json:"root"`
-	ServiceName         string      `json:"serviceName"`
-	Runtime             []string    `json:"runtime"`
-	Frameworks          []string    `json:"frameworks"`
-	Entrypoints         []string    `json:"entrypoints"`
-	Routes              []Route     `json:"routes"`
-	DatabaseLibraries   []string    `json:"databaseLibraries"`
-	Queues              []string    `json:"queues"`
-	Loggers             []string    `json:"loggers"`
-	ExternalHTTPClients []string    `json:"externalHttpClients"`
-	Docker              DockerState `json:"docker"`
-	TestCommands        []string    `json:"testCommands"`
-	Recommendations     []string    `json:"recommendations"`
+	Root                string            `json:"root"`
+	ServiceName         string            `json:"serviceName"`
+	Runtime             []string          `json:"runtime"`
+	Frameworks          []string          `json:"frameworks"`
+	Entrypoints         []string          `json:"entrypoints"`
+	Routes              []Route           `json:"routes"`
+	DatabaseLibraries   []string          `json:"databaseLibraries"`
+	Queues              []string          `json:"queues"`
+	Loggers             []string          `json:"loggers"`
+	ExternalHTTPClients []string          `json:"externalHttpClients"`
+	Docker              DockerState       `json:"docker"`
+	TestCommands        []string          `json:"testCommands"`
+	Recommendations     []string          `json:"recommendations"`
+	Warnings            []scanner.Warning `json:"warnings,omitempty"`
 }
 
 type Route struct {
@@ -52,6 +53,7 @@ func Analyze(root string) (Result, error) {
 		Frameworks:        scan.Frameworks,
 		Entrypoints:       scan.Entrypoints,
 		DatabaseLibraries: scan.DatabaseLibraries,
+		Warnings:          append([]scanner.Warning(nil), scan.Warnings...),
 		Docker: DockerState{
 			ComposeFiles: scan.ComposeFiles,
 		},
@@ -78,11 +80,11 @@ func Analyze(root string) (Result, error) {
 		result.TestCommands = append(result.TestCommands, "go test ./...")
 	}
 
-	_ = filepath.WalkDir(scan.Root, func(path string, d os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(scan.Root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && shouldSkip(d.Name()) && path != scan.Root {
+		if d.IsDir() && scanner.IsExcludedDir(d.Name()) && path != scan.Root {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
@@ -91,6 +93,7 @@ func Analyze(root string) (Result, error) {
 		rel := relPath(scan.Root, path)
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
+			result.Warnings = append(result.Warnings, scanner.Warning{Kind: "source", Path: rel, Detail: readErr.Error()})
 			return nil
 		}
 		text := string(data)
@@ -104,6 +107,9 @@ func Analyze(root string) (Result, error) {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return Result{}, walkErr
+	}
 
 	result.Routes = uniqueRoutes(result.Routes)
 	result.Loggers = sortedUnique(result.Loggers)
@@ -353,12 +359,7 @@ func sortedUnique(values []string) []string {
 }
 
 func shouldSkip(name string) bool {
-	switch strings.ToLower(name) {
-	case ".git", ".extent", ".gocache", ".smoke", "node_modules", "vendor", "bin", "obj", ".venv", "venv", "dist", "build", ".next":
-		return true
-	default:
-		return false
-	}
+	return scanner.IsExcludedDir(name)
 }
 
 func isComposeFile(path string) bool {

@@ -3,18 +3,24 @@ package scorer
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
 	PrometheusURL string
+	ServiceName   string
+	Lookback      string
 }
 
 type Score struct {
 	Total       int              `json:"total"`
+	Coverage    float64          `json:"coverage"`
 	Summary     string           `json:"summary"`
 	Dimensions  []DimensionScore `json:"dimensions"`
 	Suggestions []string         `json:"suggestions"`
@@ -23,7 +29,9 @@ type Score struct {
 type DimensionScore struct {
 	Name   string `json:"name"`
 	Score  int    `json:"score"`
+	Status string `json:"status"`
 	Detail string `json:"detail"`
+	Query  string `json:"query,omitempty"`
 }
 
 func Build(config Config) Score {
@@ -32,26 +40,36 @@ func Build(config Config) Score {
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	dimensions := []DimensionScore{
-		check(client, config.PrometheusURL, "coverage", `sum(otelcol_receiver_accepted_spans)`, "traces are reaching the Collector"),
-		check(client, config.PrometheusURL, "metrics", `sum(otelcol_receiver_accepted_metric_points)`, "metrics are reaching the Collector"),
-		check(client, config.PrometheusURL, "logs", `sum(otelcol_receiver_accepted_log_records)`, "logs are reaching the Collector"),
-		check(client, config.PrometheusURL, "host/container", `up{job=~"cadvisor|node-exporter"}`, "infrastructure exporters are scraped"),
-		check(client, config.PrometheusURL, "correlation readiness", `sum(otelcol_receiver_accepted_spans)`, "trace IDs can be used for log/metric links"),
+		check(client, config.PrometheusURL, "Prometheus endpoint", `up`, "Prometheus returned measured targets"),
+		check(client, config.PrometheusURL, "Collector trace ingestion", `sum(otelcol_receiver_accepted_spans)`, "the Collector has accepted spans globally"),
+		check(client, config.PrometheusURL, "Collector metric ingestion", `sum(otelcol_receiver_accepted_metric_points)`, "the Collector has accepted metric points globally"),
+		check(client, config.PrometheusURL, "Collector log ingestion", `sum(otelcol_receiver_accepted_log_records)`, "the Collector has accepted log records globally"),
+		check(client, config.PrometheusURL, "Optional host metrics", `up{job=~"cadvisor|node-exporter"}`, "infrastructure exporters are scraped"),
+		{Name: "Service identity", Status: "unknown", Detail: "global Collector counters do not prove telemetry for the requested service"},
+		{Name: "Log/trace correlation", Status: "unknown", Detail: "correlation requires matched service-specific logs and traces"},
 	}
 	total := 0
+	scored := 0
 	for _, dimension := range dimensions {
-		total += dimension.Score
+		if dimension.Status == "measured" || dimension.Status == "missing" {
+			total += dimension.Score
+			scored++
+		}
 	}
-	total = total / len(dimensions)
+	if scored > 0 {
+		total /= scored
+	}
+	coverage := float64(scored) / float64(len(dimensions))
 	suggestions := []string{}
 	for _, dimension := range dimensions {
-		if dimension.Score < 100 {
+		if dimension.Status != "measured" {
 			suggestions = append(suggestions, "Improve "+dimension.Name+": "+dimension.Detail)
 		}
 	}
 	return Score{
 		Total:       total,
-		Summary:     fmt.Sprintf("Telemetry Quality Score: %d/100", total),
+		Coverage:    coverage,
+		Summary:     fmt.Sprintf("Telemetry Quality Score: %d/100 across %d/%d measured dimensions", total, scored, len(dimensions)),
 		Dimensions:  dimensions,
 		Suggestions: suggestions,
 	}
@@ -60,12 +78,12 @@ func Build(config Config) Score {
 func check(client *http.Client, baseURL, name, expr, okDetail string) DimensionScore {
 	value, err := query(client, baseURL, expr)
 	if err != nil {
-		return DimensionScore{Name: name, Score: 0, Detail: err.Error()}
+		return DimensionScore{Name: name, Status: "unavailable", Detail: err.Error(), Query: expr}
 	}
 	if value > 0 {
-		return DimensionScore{Name: name, Score: 100, Detail: okDetail}
+		return DimensionScore{Name: name, Score: 100, Status: "measured", Detail: okDetail, Query: expr}
 	}
-	return DimensionScore{Name: name, Score: 35, Detail: "signal missing or not yet scraped"}
+	return DimensionScore{Name: name, Score: 0, Status: "missing", Detail: "query succeeded but returned no positive samples", Query: expr}
 }
 
 func query(client *http.Client, baseURL, expr string) (float64, error) {
@@ -73,7 +91,10 @@ func query(client *http.Client, baseURL, expr string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	endpoint.Path = "/api/v1/query"
+	if endpoint.Scheme != "http" && endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil {
+		return 0, fmt.Errorf("invalid Prometheus URL")
+	}
+	endpoint.Path = path.Join(strings.TrimSuffix(endpoint.Path, "/"), "api/v1/query")
 	values := endpoint.Query()
 	values.Set("query", expr)
 	endpoint.RawQuery = values.Encode()
@@ -82,6 +103,9 @@ func query(client *http.Client, baseURL, expr string) (float64, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("Prometheus returned %s", resp.Status)
+	}
 	var payload struct {
 		Status string `json:"status"`
 		Data   struct {
@@ -90,7 +114,7 @@ func query(client *http.Client, baseURL, expr string) (float64, error) {
 			} `json:"result"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
 		return 0, err
 	}
 	if payload.Status != "success" || len(payload.Data.Result) == 0 || len(payload.Data.Result[0].Value) < 2 {

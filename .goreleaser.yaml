@@ -1,0 +1,68 @@
+version: 2
+
+project_name: extent
+
+before:
+  hooks:
+    - go mod tidy -diff
+
+builds:
+  - id: extent
+    main: ./cmd/extent
+    binary: extent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/Anubisx404/Extent/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/Anubisx404/Extent/internal/buildinfo.Commit={{ .Commit }}
+      - -X github.com/Anubisx404/Extent/internal/buildinfo.Date={{ .Date }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+    documents:
+      - '${artifact}-sbom.spdx.json'
+    cmd: syft
+    args:
+      - '${artifact}'
+      - '-o'
+      - 'spdx-json=${document}'
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^ chore:'
+      - '^test:'
+
+release:
+  draft: true
+  prerelease: auto
+  mode: replace

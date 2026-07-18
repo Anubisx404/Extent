@@ -1,8 +1,14 @@
 package codemods
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Anubisx404/Extent/internal/fileops"
+	"github.com/Anubisx404/Extent/internal/state"
 )
 
 func TestBuildBundleIncludesLanguageSpecificASTPatchers(t *testing.T) {
@@ -43,6 +49,52 @@ func TestBuildBundleIncludesRunnablePatchersWithBackups(t *testing.T) {
 	requireFileContains(t, bundle, "extent.codemods/python/deep_instrument.py", "start_as_current_span")
 	requireFileContains(t, bundle, "extent.codemods/dotnet/ExtentRoslynPatcher.cs", "static int Main")
 	requireFileContains(t, bundle, "extent.codemods/java/ExtentJavaParserPatcher.java", "public static void main")
+}
+
+func TestWriteBundleHandlesMixedCreateUpdateIdempotenceAndUndo(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := filepath.Join(root, "extent.codemods", "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("user manifest\n")
+	if err := os.WriteFile(manifestPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write(root, false); err == nil {
+		t.Fatal("existing bundle file was overwritten without permission")
+	}
+	changed, err := Write(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != len(BuildBundle().Files) {
+		t.Fatalf("changed paths = %d, want %d", len(changed), len(BuildBundle().Files))
+	}
+	second, err := Write(root, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 0 {
+		t.Fatalf("idempotent write reported changes: %#v", second)
+	}
+	manifest, err := state.Load(root)
+	if err != nil || len(manifest.Operations) != 1 {
+		t.Fatalf("state = %#v, %v", manifest, err)
+	}
+	if err := fileops.UndoKind(root, "codemod-bundle"); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, original) {
+		t.Fatalf("restored manifest = %q", restored)
+	}
+	if _, err := os.Stat(filepath.Join(root, "extent.codemods", "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("created bundle file survived undo: %v", err)
+	}
 }
 
 func requireFileContains(t *testing.T, bundle Bundle, path, want string) {

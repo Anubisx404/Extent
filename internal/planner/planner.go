@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"extent/internal/scanner"
+	"github.com/Anubisx404/Extent/internal/scanner"
 )
 
 type Plan struct {

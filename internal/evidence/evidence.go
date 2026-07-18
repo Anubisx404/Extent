@@ -1,12 +1,18 @@
 package evidence
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Anubisx404/Extent/internal/observability"
 )
 
 type Config struct {
@@ -14,6 +20,7 @@ type Config struct {
 	LokiURL       string
 	TempoURL      string
 	Window        string
+	ServiceName   string
 }
 
 type Result struct {
@@ -24,7 +31,18 @@ type Result struct {
 	QueueFindings []QueueFinding `json:"queueFindings,omitempty"`
 	LogAnomalies  []LogAnomaly   `json:"logAnomalies,omitempty"`
 	Metrics       []MetricSample `json:"metrics,omitempty"`
+	Provenance    []Provenance   `json:"provenance,omitempty"`
 	Warnings      []string       `json:"warnings,omitempty"`
+}
+
+type Provenance struct {
+	Source      string    `json:"source"`
+	Scope       string    `json:"scope"`
+	ServiceName string    `json:"serviceName,omitempty"`
+	Window      string    `json:"window"`
+	Query       string    `json:"query"`
+	RetrievedAt time.Time `json:"retrievedAt"`
+	Status      string    `json:"status"`
 }
 
 type TraceExample struct {
@@ -89,9 +107,23 @@ func Collect(config Config) Result {
 	if config.TempoURL == "" {
 		config.TempoURL = "http://localhost:3200"
 	}
+	if config.Window == "" {
+		config.Window = "30m"
+	}
+	window, err := time.ParseDuration(config.Window)
+	if err != nil || window <= 0 || window > 30*24*time.Hour {
+		return Result{Warnings: []string{"invalid evidence window: " + config.Window}}
+	}
+	if strings.TrimSpace(config.ServiceName) == "" {
+		return Result{Warnings: []string{"service name is required for target-scoped evidence collection"}}
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	var result Result
-	traces, err := queryTempo(client, config.TempoURL)
+	traces, err := queryTempo(client, config.TempoURL, config.ServiceName, window)
+	result.Provenance = append(result.Provenance, provenance("tempo", config, "service trace search", err))
+	if err == nil && len(traces) == 0 {
+		result.Provenance[len(result.Provenance)-1].Status = "missing"
+	}
 	if err != nil {
 		result.Warnings = append(result.Warnings, "tempo evidence query failed: "+err.Error())
 	} else {
@@ -108,13 +140,21 @@ func Collect(config Config) Result {
 		result.ExternalHTTP = detectHTTPFindings(result.Spans)
 		result.QueueFindings = detectQueueFindings(result.Spans)
 	}
-	logs, err := queryLoki(client, config.LokiURL)
+	logs, err := queryLoki(client, config.LokiURL, config.ServiceName, window)
+	result.Provenance = append(result.Provenance, provenance("loki", config, "service error/warning logs", err))
+	if err == nil && len(logs) == 0 {
+		result.Provenance[len(result.Provenance)-1].Status = "missing"
+	}
 	if err != nil {
 		result.Warnings = append(result.Warnings, "loki evidence query failed: "+err.Error())
 	} else {
 		result.LogAnomalies = logs
 	}
-	metrics, err := queryPrometheus(client, config.PrometheusURL)
+	metrics, err := queryPrometheus(client, config.PrometheusURL, config.ServiceName, config.Window)
+	result.Provenance = append(result.Provenance, provenance("prometheus", config, "service HTTP p95 latency", err))
+	if err == nil && len(metrics) == 0 {
+		result.Provenance[len(result.Provenance)-1].Status = "missing"
+	}
 	if err != nil {
 		result.Warnings = append(result.Warnings, "prometheus evidence query failed: "+err.Error())
 	} else {
@@ -123,20 +163,21 @@ func Collect(config Config) Result {
 	return result
 }
 
+func provenance(source string, config Config, query string, err error) Provenance {
+	status := "measured"
+	if err != nil {
+		status = "unavailable"
+	}
+	return Provenance{Source: source, Scope: "target", ServiceName: config.ServiceName, Window: config.Window, Query: query, RetrievedAt: time.Now().UTC(), Status: status}
+}
+
 func queryTempoTrace(client *http.Client, baseURL, traceID string) ([]SpanEvidence, error) {
 	if traceID == "" {
 		return nil, nil
 	}
-	endpoint, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, err
+	if !traceIDPattern.MatchString(traceID) {
+		return nil, fmt.Errorf("invalid Tempo trace ID")
 	}
-	endpoint.Path = "/api/traces/" + traceID
-	resp, err := client.Get(endpoint.String())
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
 	var payload struct {
 		Batches []struct {
 			ScopeSpans []struct {
@@ -152,7 +193,7 @@ func queryTempoTrace(client *http.Client, baseURL, traceID string) ([]SpanEviden
 			} `json:"scopeSpans"`
 		} `json:"resourceSpans"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := getJSON(client, baseURL, "/api/traces/"+traceID, nil, &payload); err != nil {
 		return nil, err
 	}
 	var out []SpanEvidence
@@ -298,20 +339,31 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func queryTempo(client *http.Client, baseURL string) ([]TraceExample, error) {
-	endpoint, err := url.Parse(baseURL)
+var traceIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{16,32}$`)
+
+func getJSON(client *http.Client, baseURL, path string, q url.Values, target any) error {
+	base, err := observability.ValidateURL(baseURL)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	endpoint.Path = "/api/search"
-	values := endpoint.Query()
+	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
+	response, err := bounded.Do(context.Background(), http.MethodGet, base, path, q, nil)
+	if err != nil {
+		return err
+	}
+	if err := json.NewDecoder(bytes.NewReader(response.Body)).Decode(target); err != nil {
+		return fmt.Errorf("decode observability response: %w", err)
+	}
+	return nil
+}
+
+func queryTempo(client *http.Client, baseURL, service string, window time.Duration) ([]TraceExample, error) {
+	values := url.Values{}
 	values.Set("limit", "5")
-	endpoint.RawQuery = values.Encode()
-	resp, err := client.Get(endpoint.String())
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	values.Set("q", `{ resource.service.name = `+strconv.Quote(service)+` }`)
+	now := time.Now()
+	values.Set("start", strconv.FormatInt(now.Add(-window).Unix(), 10))
+	values.Set("end", strconv.FormatInt(now.Unix(), 10))
 	var payload struct {
 		Traces []struct {
 			TraceID         string  `json:"traceID"`
@@ -320,7 +372,7 @@ func queryTempo(client *http.Client, baseURL string) ([]TraceExample, error) {
 			DurationMS      float64 `json:"durationMs"`
 		} `json:"traces"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := getJSON(client, baseURL, "/api/search", values, &payload); err != nil {
 		return nil, err
 	}
 	out := make([]TraceExample, 0, len(payload.Traces))
@@ -335,21 +387,13 @@ func queryTempo(client *http.Client, baseURL string) ([]TraceExample, error) {
 	return out, nil
 }
 
-func queryLoki(client *http.Client, baseURL string) ([]LogAnomaly, error) {
-	endpoint, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, err
-	}
-	endpoint.Path = "/loki/api/v1/query_range"
-	values := endpoint.Query()
-	values.Set("query", `{level=~"error|warn"} |= ""`)
+func queryLoki(client *http.Client, baseURL, service string, window time.Duration) ([]LogAnomaly, error) {
+	values := url.Values{}
+	values.Set("query", `{service_name=`+strconv.Quote(service)+`,level=~"error|warn"}`)
 	values.Set("limit", "20")
-	endpoint.RawQuery = values.Encode()
-	resp, err := client.Get(endpoint.String())
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	now := time.Now()
+	values.Set("start", strconv.FormatInt(now.Add(-window).UnixNano(), 10))
+	values.Set("end", strconv.FormatInt(now.UnixNano(), 10))
 	var payload struct {
 		Data struct {
 			Result []struct {
@@ -358,7 +402,7 @@ func queryLoki(client *http.Client, baseURL string) ([]LogAnomaly, error) {
 			} `json:"result"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := getJSON(client, baseURL, "/loki/api/v1/query_range", values, &payload); err != nil {
 		return nil, err
 	}
 	var out []LogAnomaly
@@ -392,8 +436,9 @@ func queryLoki(client *http.Client, baseURL string) ([]LogAnomaly, error) {
 	return out, nil
 }
 
-func queryPrometheus(client *http.Client, baseURL string) ([]MetricSample, error) {
-	sample, err := prometheusFirst(client, baseURL, `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket[5m])) by (le, route, path)))`)
+func queryPrometheus(client *http.Client, baseURL, service, window string) ([]MetricSample, error) {
+	expr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{service_name=` + strconv.Quote(service) + `}[` + window + `])) by (le, http_route, route, path)))`
+	sample, err := prometheusFirst(client, baseURL, expr)
 	if err != nil {
 		return nil, err
 	}
@@ -404,19 +449,8 @@ func queryPrometheus(client *http.Client, baseURL string) ([]MetricSample, error
 }
 
 func prometheusFirst(client *http.Client, baseURL, expr string) (MetricSample, error) {
-	endpoint, err := url.Parse(baseURL)
-	if err != nil {
-		return MetricSample{}, err
-	}
-	endpoint.Path = "/api/v1/query"
-	values := endpoint.Query()
+	values := url.Values{}
 	values.Set("query", expr)
-	endpoint.RawQuery = values.Encode()
-	resp, err := client.Get(endpoint.String())
-	if err != nil {
-		return MetricSample{}, err
-	}
-	defer resp.Body.Close()
 	var payload struct {
 		Status string `json:"status"`
 		Data   struct {
@@ -426,7 +460,7 @@ func prometheusFirst(client *http.Client, baseURL, expr string) (MetricSample, e
 			} `json:"result"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := getJSON(client, baseURL, "/api/v1/query", values, &payload); err != nil {
 		return MetricSample{}, err
 	}
 	if payload.Status != "success" || len(payload.Data.Result) == 0 || len(payload.Data.Result[0].Value) < 2 {

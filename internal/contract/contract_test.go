@@ -4,7 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"extent/internal/analyzer"
+	"github.com/Anubisx404/Extent/internal/analyzer"
+	"github.com/Anubisx404/Extent/internal/config"
 )
 
 func TestRenderIncludesServiceSignalsSLOAndRedaction(t *testing.T) {
@@ -29,3 +30,13 @@ func TestRenderIncludesServiceSignalsSLOAndRedaction(t *testing.T) {
 	}
 }
 
+func TestRenderRoundTripsAndQuotesAnalyzerName(t *testing.T) {
+	doc := Render(analyzer.Result{ServiceName: "evil: true\nunknown: yes", DatabaseLibraries: []string{"redis"}, Queues: []string{"rabbit"}})
+	c, err := config.Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Service.Name != "evil: true\nunknown: yes" || !c.Instrumentation.Redis || !c.Instrumentation.Queues {
+		t.Fatalf("unexpected config: %+v", c)
+	}
+}

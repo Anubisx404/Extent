@@ -6,12 +6,16 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Anubisx404/Extent/internal/scanner"
+	"gopkg.in/yaml.v3"
 )
 
 type Report struct {
 	Score       int       `json:"score"`
 	Findings    []Finding `json:"findings,omitempty"`
 	Suggestions []string  `json:"suggestions,omitempty"`
+	Unparsed    []string  `json:"unparsed,omitempty"`
 }
 
 type Finding struct {
@@ -32,8 +36,18 @@ var highCardinalityLabels = map[string]string{
 
 func Analyze(root string) Report {
 	var findings []Finding
+	var unparsed []string
 	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if path != root && d.IsDir() && scanner.IsExcludedDir(d.Name()) {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
@@ -43,11 +57,16 @@ func Analyze(root string) Report {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
+			unparsed = append(unparsed, rel)
 			return nil
 		}
-		text := strings.ToLower(string(data))
-		for label, reason := range highCardinalityLabels {
-			if labelAppears(text, label) {
+		var document yaml.Node
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			unparsed = append(unparsed, rel)
+			return nil
+		}
+		for label := range structuralLabels(&document) {
+			if reason, risky := highCardinalityLabels[label]; risky {
 				findings = append(findings, Finding{File: rel, Label: label, Reason: reason})
 			}
 		}
@@ -60,12 +79,70 @@ func Analyze(root string) Report {
 	if score < 0 {
 		score = 0
 	}
-	report := Report{Score: score, Findings: findings}
+	sort.Strings(unparsed)
+	report := Report{Score: score, Findings: findings, Unparsed: unparsed}
 	if len(findings) > 0 {
 		report.Suggestions = append(report.Suggestions, "Move trace_id/span_id/user/request/business identifiers into structured metadata or log fields.")
 		report.Suggestions = append(report.Suggestions, "Keep Loki labels to low-cardinality dimensions such as service_name, environment, level, and runtime.")
 	}
 	return report
+}
+
+func structuralLabels(node *yaml.Node) map[string]bool {
+	found := map[string]bool{}
+	var visit func(*yaml.Node, string)
+	visit = func(current *yaml.Node, parentKey string) {
+		if current == nil {
+			return
+		}
+		switch current.Kind {
+		case yaml.DocumentNode, yaml.SequenceNode:
+			for _, child := range current.Content {
+				visit(child, parentKey)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(current.Content); i += 2 {
+				key := strings.ToLower(strings.TrimSpace(current.Content[i].Value))
+				value := current.Content[i+1]
+				if key == "labels" || key == "labelnames" || key == "label_names" {
+					collectLabelNames(value, found)
+				}
+				if (key == "expr" || key == "query" || key == "logql") && value.Kind == yaml.ScalarNode {
+					collectQueryLabels(strings.ToLower(value.Value), found)
+				}
+				visit(value, key)
+			}
+		case yaml.ScalarNode:
+			if parentKey == "expr" || parentKey == "query" || parentKey == "logql" {
+				collectQueryLabels(strings.ToLower(current.Value), found)
+			}
+		}
+	}
+	visit(node, "")
+	return found
+}
+
+func collectLabelNames(node *yaml.Node, found map[string]bool) {
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			found[strings.ToLower(strings.TrimSpace(node.Content[i].Value))] = true
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			if child.Kind == yaml.ScalarNode {
+				found[strings.ToLower(strings.TrimSpace(child.Value))] = true
+			}
+		}
+	}
+}
+
+func collectQueryLabels(query string, found map[string]bool) {
+	for label := range highCardinalityLabels {
+		if labelAppears(query, label) {
+			found[label] = true
+		}
+	}
 }
 
 func labelAppears(text, label string) bool {
