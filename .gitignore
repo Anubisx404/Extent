@@ -30,3 +30,5 @@ grafana/
 extent.codemods/
 *.exe
 /dist/
+
+desktop.ini

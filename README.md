@@ -314,25 +314,3 @@ recipes/                Framework-specific instrumentation recipes
 plans/                  Delivery plans and phase notes
 docs/                   Roadmap and implementation alternatives
 ```
-
-## Name Notes
-
-The project is now named **Extent**.
-
-Why it works:
-
-- It suggests expanding visibility across a system.
-- It is short enough for a CLI command.
-- It does not lock the product to only OpenTelemetry or only LGTM.
-- It leaves room for the future Svelte UI and desktop app.
-
-## Roadmap
-
-V1: Go CLI foundation.
-
-V2: Svelte local web UI served by the Go CLI.
-
-V3: Desktop wrapper, likely Tauri + Svelte with the Go binary as the engine.
-
-Detailed phase notes live in [plans/v1-cli-completion-plan.md](plans/v1-cli-completion-plan.md)
-and [docs/implementation-plans.md](docs/implementation-plans.md).
