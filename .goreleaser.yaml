@@ -63,6 +63,6 @@ changelog:
       - '^test:'
 
 release:
-  draft: true
+  draft: false
   prerelease: auto
   mode: replace

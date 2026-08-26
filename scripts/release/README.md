@@ -9,5 +9,6 @@ The script uses locally installed GoReleaser and Syft when both are available.
 Otherwise, it uses the pinned `goreleaser/goreleaser:v2.12.7` Docker image,
 which includes Syft.
 
-The release workflow runs only for `v*.*.*` tags and publishes a draft release.
-Tagging and publishing are intentionally outside local verification.
+The release workflow runs only for `v*.*.*` tags and publishes the release after
+tests, vetting, formatting, and module-tidiness checks pass. Tagging and
+publishing are intentionally outside local verification.

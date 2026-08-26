@@ -9,8 +9,10 @@ import (
 	"time"
 )
 
+const helperProcessTimeout = 5 * time.Second
+
 func TestRunnerCapturesBoundedOutputAndStructuredResult(t *testing.T) {
-	runner := helperRunner(5, time.Second)
+	runner := helperRunner(5, helperProcessTimeout)
 	got := runner.Run(context.Background(), os.Args[0], "-test.run=TestHelperProcess", "--", "output")
 	if got.Err != nil || got.ExitCode != 0 || got.Duration <= 0 || !got.StdoutTruncated || !got.StderrTruncated {
 		t.Fatalf("unexpected result: %+v", got)
@@ -44,12 +46,12 @@ func TestRunnerArgvNotShell(t *testing.T) {
 func TestRunnerCancellationAndNonzeroExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	cancelled := helperRunner(DefaultMaxOutput, time.Second).Run(ctx, os.Args[0], "-test.run=TestHelperProcess", "--", "sleep")
+	cancelled := helperRunner(DefaultMaxOutput, helperProcessTimeout).Run(ctx, os.Args[0], "-test.run=TestHelperProcess", "--", "sleep")
 	if !cancelled.Cancelled || cancelled.Err == nil {
 		t.Fatalf("expected cancellation: %+v", cancelled)
 	}
 
-	failed := helperRunner(DefaultMaxOutput, time.Second).Run(context.Background(), os.Args[0], "-test.run=TestHelperProcess", "--", "fail")
+	failed := helperRunner(DefaultMaxOutput, helperProcessTimeout).Run(context.Background(), os.Args[0], "-test.run=TestHelperProcess", "--", "fail")
 	if failed.ExitCode != 7 || failed.Err == nil {
 		t.Fatalf("expected exit 7: %+v", failed)
 	}
@@ -57,7 +59,7 @@ func TestRunnerCancellationAndNonzeroExit(t *testing.T) {
 
 func TestRunnerEnvironmentOverlay(t *testing.T) {
 	t.Setenv("EXTENT_PROCESS_TEST", "original")
-	runner := helperRunner(DefaultMaxOutput, time.Second)
+	runner := helperRunner(DefaultMaxOutput, helperProcessTimeout)
 	runner.Env = append(runner.Env, "EXTENT_PROCESS_TEST=overridden")
 	got := runner.Run(context.Background(), os.Args[0], "-test.run=TestHelperProcess", "--", "env")
 	if got.Err != nil || strings.TrimSpace(got.Stdout) != "overridden" {
