@@ -1,7 +1,10 @@
 # Extent
 
+[![CI](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml/badge.svg)](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/Anubisx404/Extent?logo=github)](https://github.com/Anubisx404/Extent/releases)
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Anubisx404/Extent)](https://goreportcard.com/report/github.com/Anubisx404/Extent)
+[![Security: govulncheck](https://img.shields.io/badge/Security-govulncheck-blue?logo=go&logoColor=white)](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-OTLP-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
 [![Grafana LGTM](https://img.shields.io/badge/Grafana-LGTM-F46800?logo=grafana&logoColor=white)](https://grafana.com/oss/)
 [![Status](https://img.shields.io/badge/status-V1_CLI_foundation-brightgreen)](#v1-status)
@@ -25,6 +28,33 @@ and verification by hand. Extent turns that into a guided workflow:
 
 ```text
 scan -> analyze -> plan -> apply -> instrument -> stack up -> verify -> report -> score
+```
+
+```mermaid
+flowchart TD
+    subgraph Discovery ["1. Discovery & Planning"]
+        A["Target Repository"] --> B["extent scan<br/>(Runtime & Framework Detection)"]
+        B --> C["extent analyze<br/>(AST, Routes, DB, Queues)"]
+        C --> D["extent plan<br/>(Rollout Strategy & Profiles)"]
+    end
+
+    subgraph Generation ["2. Provisioning & Instrumentation"]
+        D --> E["extent apply<br/>(extent.yaml & LGTM Configs)"]
+        E --> F["extent instrument<br/>(OTel Bootstrap Injection)"]
+        F --> G["extent deps<br/>(SDK Dependency Sync)"]
+    end
+
+    subgraph Runtime ["3. Stack & Verification"]
+        G --> H["extent stack up<br/>(Docker Compose LGTM Stack)"]
+        H --> I["extent verify / doctor<br/>(Config & Endpoint Checks)"]
+        I --> J["extent smoke<br/>(Synthetic Traffic & Correlation)"]
+    end
+
+    subgraph Governance ["4. Analysis & Quality"]
+        J --> K["extent cardinality<br/>(Loki Label Risk Score)"]
+        J --> L["extent score<br/>(Telemetry Quality Rating)"]
+        J --> M["extent report / baseline<br/>(Prometheus Bottlenecks & Diff)"]
+    end
 ```
 
 Extent treats OpenTelemetry APIs, SDKs, semantic attributes, resources,
@@ -288,6 +318,25 @@ The generated stack contains:
   profile is explicitly enabled on a compatible Linux Docker host.
 - Grafana with provisioned datasources and a starter dashboard.
 
+```mermaid
+flowchart LR
+    APP["Target App<br/>(OTel Traces / Metrics / Logs)"] -->|OTLP gRPC:4317 / HTTP:4318| OTCP["otel-collector.yml<br/>(OTel Collector)"]
+
+    subgraph LGTM ["Local LGTM Stack (docker-compose.observability.yml)"]
+        OTCP -->|Remote Write :9090| PROM["prometheus.yml<br/>(Prometheus Metrics)"]
+        OTCP -->|OTLP Exporter :3200| TEMPO["tempo.yml<br/>(Tempo Traces)"]
+        OTCP -->|Loki Push API :3100| LOKI["loki.yml<br/>(Loki Logs)"]
+
+        PROM --> GRAF["grafana/<br/>(Dashboards & Datasources)"]
+        TEMPO --> GRAF
+        LOKI --> GRAF
+    end
+
+    CLI_VERIFY["extent smoke / verify / report"] -.->|Query API| PROM
+    CLI_VERIFY -.->|Query API| TEMPO
+    CLI_VERIFY -.->|Query API| LOKI
+```
+
 ## Architecture
 
 ```text
@@ -313,4 +362,66 @@ internal/verifier       Local verification checks
 recipes/                Framework-specific instrumentation recipes
 plans/                  Delivery plans and phase notes
 docs/                   Roadmap and implementation alternatives
+```
+
+```mermaid
+flowchart TD
+    CLI["cmd/extent<br/>(CLI Entrypoint & Dispatcher)"]
+
+    subgraph AnalysisLayer ["Analysis & Contract Engine"]
+        SCAN["internal/scanner"]
+        ANALYZER["internal/analyzer"]
+        PLANNER["internal/planner"]
+        CONTRACT["internal/contract"]
+        CONF["internal/config"]
+    end
+
+    subgraph MutationLayer ["Instrumentation & GitOps"]
+        INST["internal/instrumenter"]
+        DEPS["internal/deps"]
+        CODEMOD["internal/codemods"]
+        GITOPS["internal/gitops"]
+        RECIPES["recipes/"]
+    end
+
+    subgraph ProvisioningLayer ["Stack Provisioning & Control"]
+        TEMPL["internal/templates"]
+        STACK["internal/stack"]
+    end
+
+    subgraph VerificationLayer ["Verification & Evidence Engine"]
+        VERIFY["internal/verifier"]
+        SMOKE["internal/smoke"]
+        EVID["internal/evidence"]
+        REPORT["internal/reporter"]
+        RECOM["internal/recommendations"]
+        BASE["internal/baseline"]
+        CARD["internal/cardinality"]
+        SCORE["internal/scorer"]
+    end
+
+    subgraph TargetArtifacts ["Target System & LGTM Stack"]
+        TARGET_CODE["Application Source & Dependencies"]
+        COMPOSE["docker-compose.observability.yml"]
+        COLLECTOR["OTel Collector (OTLP Ingest)"]
+        BACKENDS["Prometheus / Tempo / Loki / Grafana"]
+    end
+
+    CLI --> AnalysisLayer
+    CLI --> MutationLayer
+    CLI --> ProvisioningLayer
+    CLI --> VerificationLayer
+
+    AnalysisLayer --> PLANNER
+    PLANNER --> CONTRACT
+    CONTRACT --> TEMPL
+
+    MutationLayer --> TARGET_CODE
+    ProvisioningLayer --> COMPOSE
+    COMPOSE --> COLLECTOR
+    COMPOSE --> BACKENDS
+
+    VerificationLayer --> TARGET_CODE
+    VerificationLayer --> COLLECTOR
+    VerificationLayer --> BACKENDS
 ```
