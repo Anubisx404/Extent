@@ -35,6 +35,17 @@ jobs:
           cache: true
       - run: go test ./...
       - run: go vet ./...
+      - run: go build ./cmd/extent
+
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.x"
+          cache: true
       - name: Check formatting
         shell: bash
         run: |
@@ -44,7 +55,6 @@ jobs:
             exit 1
           }
       - run: go mod tidy -diff
-      - run: go build ./cmd/extent
 
   race:
     runs-on: ubuntu-latest
