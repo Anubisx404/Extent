@@ -92,6 +92,7 @@ func TestRunRejectsInvalidCommandInputs(t *testing.T) {
 		{name: "report extras", args: []string{"report", "one", "two"}, code: 2},
 		{name: "report format", args: []string{"report", "--format", "yaml"}, code: 2},
 		{name: "report missing service", args: []string{"report"}, code: 2},
+		{name: "report soak missing url", args: []string{"report", "--service", "checkout", "--soak", "5s"}, code: 2},
 		{name: "baseline extras", args: []string{"baseline", "one", "two"}, code: 2},
 		{name: "baseline missing service", args: []string{"baseline"}, code: 2},
 		{name: "cardinality extras", args: []string{"cardinality", "one", "two"}, code: 2},
@@ -233,3 +234,17 @@ func mustConfigBytes(t *testing.T, recipe string) []byte {
 	}
 	return b
 }
+
+func TestReportSoakRequiresURL(t *testing.T) {
+	err := run([]string{"report", "--service", "checkout", "--soak", "5s"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := exitCode(err); got != 2 {
+		t.Fatalf("exitCode() = %d, want 2", got)
+	}
+	if !strings.Contains(err.Error(), "report --soak requires --url") {
+		t.Fatalf("expected error message to contain 'report --soak requires --url', got %v", err)
+	}
+}
+

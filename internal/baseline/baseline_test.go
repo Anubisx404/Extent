@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,75 @@ func TestSaveRejectsInvalidSnapshotWithoutMutation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".extent")); !os.IsNotExist(err) {
 		t.Fatalf("invalid save mutated project: %v", err)
+	}
+}
+
+func TestCompareLoadProfilesAndDetectRegression(t *testing.T) {
+	before := Snapshot{
+		ServiceName: "checkout",
+		Measurements: map[string]Measurement{
+			"traceCount": {Status: "measured", Value: 10, Unit: "count"},
+		},
+		LoadProfile: &LoadProfile{
+			DurationSeconds: 30,
+			Concurrency:     5,
+			ThroughputRPS:   120.5,
+			TotalRequests:   3615,
+			ErrorRate:       0.01,
+			P99LatencyMS:    45.0,
+		},
+	}
+	after := Snapshot{
+		ServiceName: "checkout",
+		Measurements: map[string]Measurement{
+			"traceCount": {Status: "measured", Value: 10, Unit: "count"},
+		},
+		LoadProfile: &LoadProfile{
+			DurationSeconds: 30,
+			Concurrency:     5,
+			ThroughputRPS:   80.0,
+			TotalRequests:   2400,
+			ErrorRate:       0.08,
+			P99LatencyMS:    95.0,
+		},
+	}
+
+	comparison := Compare(before, after)
+	if !comparison.LoadRegression {
+		t.Fatalf("expected load regression to be true, got false")
+	}
+	summaryLower := strings.ToLower(comparison.LoadSummary)
+	if !strings.Contains(summaryLower, "regression") || !strings.Contains(summaryLower, "latency") || !strings.Contains(summaryLower, "throughput") || !strings.Contains(summaryLower, "error") {
+		t.Fatalf("expected load summary to mention latency, throughput, and error regression, got %q", comparison.LoadSummary)
+	}
+	if !strings.Contains(strings.ToLower(comparison.Summary), "regression") {
+		t.Fatalf("expected comparison.Summary to mention regression, got %q", comparison.Summary)
+	}
+
+	root := t.TempDir()
+	if err := Save(root, before); err != nil {
+		t.Fatalf("failed to save baseline with load profile: %v", err)
+	}
+	loaded, err := Load(filepath.Join(root, ".extent", "baseline.json"))
+	if err != nil {
+		t.Fatalf("failed to load baseline with load profile: %v", err)
+	}
+	if loaded.LoadProfile == nil {
+		t.Fatal("expected loaded.LoadProfile to not be nil")
+	}
+	if loaded.LoadProfile.Concurrency != 5 || loaded.LoadProfile.ThroughputRPS != 120.5 || loaded.LoadProfile.P99LatencyMS != 45.0 {
+		t.Fatalf("loaded load profile mismatch: %#v", loaded.LoadProfile)
+	}
+
+	invalidDuration := before
+	invalidDuration.LoadProfile = &LoadProfile{DurationSeconds: -1, Concurrency: 1}
+	if err := validate(invalidDuration); err == nil {
+		t.Fatal("expected error for negative duration seconds")
+	}
+
+	invalidConcurrency := before
+	invalidConcurrency.LoadProfile = &LoadProfile{DurationSeconds: 10, Concurrency: -1}
+	if err := validate(invalidConcurrency); err == nil {
+		t.Fatal("expected error for negative concurrency")
 	}
 }

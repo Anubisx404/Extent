@@ -4,6 +4,7 @@ plans/
 baseline_test/
 .smoke/
 assets/
+graphify-out/
 
 # AI agent local state and scratch directories
 .agents/

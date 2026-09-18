@@ -24,15 +24,26 @@ type Config struct {
 }
 
 type Result struct {
-	Traces        []TraceExample `json:"traces,omitempty"`
-	Spans         []SpanEvidence `json:"spans,omitempty"`
-	DBFindings    []DBFinding    `json:"dbFindings,omitempty"`
-	ExternalHTTP  []HTTPFinding  `json:"externalHttp,omitempty"`
-	QueueFindings []QueueFinding `json:"queueFindings,omitempty"`
-	LogAnomalies  []LogAnomaly   `json:"logAnomalies,omitempty"`
-	Metrics       []MetricSample `json:"metrics,omitempty"`
-	Provenance    []Provenance   `json:"provenance,omitempty"`
-	Warnings      []string       `json:"warnings,omitempty"`
+	Traces        []TraceExample      `json:"traces,omitempty"`
+	Spans         []SpanEvidence      `json:"spans,omitempty"`
+	DBFindings    []DBFinding         `json:"dbFindings,omitempty"`
+	ExternalHTTP  []HTTPFinding       `json:"externalHttp,omitempty"`
+	QueueFindings []QueueFinding      `json:"queueFindings,omitempty"`
+	Logs          []LogEvent          `json:"logs,omitempty"`
+	LogAnomalies  []LogAnomaly        `json:"logAnomalies,omitempty"`
+	Metrics       []MetricSample      `json:"metrics,omitempty"`
+	Saturation    *SaturationEvidence `json:"saturation,omitempty"`
+	Provenance    []Provenance        `json:"provenance,omitempty"`
+	Warnings      []string            `json:"warnings,omitempty"`
+}
+
+type SaturationEvidence struct {
+	RateLimit429Count    float64 `json:"rateLimit429Count,omitempty"`
+	DBPoolWaiting        float64 `json:"dbPoolWaiting,omitempty"`
+	DBPoolActive         float64 `json:"dbPoolActive,omitempty"`
+	DBPoolIdle           float64 `json:"dbPoolIdle,omitempty"`
+	QueueLag             float64 `json:"queueLag,omitempty"`
+	MemoryGrowthBytesSec float64 `json:"memoryGrowthBytesSec,omitempty"`
 }
 
 type Provenance struct {
@@ -61,9 +72,19 @@ type LogAnomaly struct {
 	Problem     string `json:"problem,omitempty"`
 }
 
+type LogEvent struct {
+	ServiceName string `json:"serviceName,omitempty"`
+	Level       string `json:"level,omitempty"`
+	TraceID     string `json:"traceId,omitempty"`
+	SpanID      string `json:"spanId,omitempty"`
+	RequestID   string `json:"requestId,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
 type MetricSample struct {
 	Name   string            `json:"name"`
 	Metric map[string]string `json:"metric,omitempty"`
+	Unit   string            `json:"unit,omitempty"`
 	Value  float64           `json:"value"`
 }
 
@@ -140,15 +161,16 @@ func Collect(config Config) Result {
 		result.ExternalHTTP = detectHTTPFindings(result.Spans)
 		result.QueueFindings = detectQueueFindings(result.Spans)
 	}
-	logs, err := queryLoki(client, config.LokiURL, config.ServiceName, window)
-	result.Provenance = append(result.Provenance, provenance("loki", config, "service error/warning logs", err))
+	logs, anomalies, err := queryLoki(client, config.LokiURL, config.ServiceName, window)
+	result.Provenance = append(result.Provenance, provenance("loki", config, "service logs and error/warning anomalies", err))
 	if err == nil && len(logs) == 0 {
 		result.Provenance[len(result.Provenance)-1].Status = "missing"
 	}
 	if err != nil {
 		result.Warnings = append(result.Warnings, "loki evidence query failed: "+err.Error())
 	} else {
-		result.LogAnomalies = logs
+		result.Logs = logs
+		result.LogAnomalies = anomalies
 	}
 	metrics, err := queryPrometheus(client, config.PrometheusURL, config.ServiceName, config.Window)
 	result.Provenance = append(result.Provenance, provenance("prometheus", config, "service HTTP p95 latency", err))
@@ -159,6 +181,17 @@ func Collect(config Config) Result {
 		result.Warnings = append(result.Warnings, "prometheus evidence query failed: "+err.Error())
 	} else {
 		result.Metrics = metrics
+	}
+	saturation, satMetrics, satErr := querySaturation(client, config.PrometheusURL, config.ServiceName, config.Window)
+	result.Provenance = append(result.Provenance, provenance("prometheus", config, "service saturation queries", satErr))
+	if satErr == nil && saturation == nil {
+		result.Provenance[len(result.Provenance)-1].Status = "missing"
+	}
+	if satErr != nil {
+		result.Warnings = append(result.Warnings, "prometheus saturation query failed: "+satErr.Error())
+	} else {
+		result.Saturation = saturation
+		result.Metrics = append(result.Metrics, satMetrics...)
 	}
 	return result
 }
@@ -339,7 +372,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-var traceIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{16,32}$`)
+var traceIDPattern = regexp.MustCompile(`^[0-9a-zA-Z_-]{1,64}$`)
 
 func getJSON(client *http.Client, baseURL, path string, q url.Values, target any) error {
 	base, err := observability.ValidateURL(baseURL)
@@ -387,9 +420,28 @@ func queryTempo(client *http.Client, baseURL, service string, window time.Durati
 	return out, nil
 }
 
-func queryLoki(client *http.Client, baseURL, service string, window time.Duration) ([]LogAnomaly, error) {
+func queryLoki(client *http.Client, baseURL, service string, window time.Duration) ([]LogEvent, []LogAnomaly, error) {
+	queries := []string{
+		`{service_name=` + strconv.Quote(service) + `} | http_request_header_x_request_id != ""`,
+		`{service_name=` + strconv.Quote(service) + `}`,
+	}
+	var lastErr error
+	for _, query := range queries {
+		logs, anomalies, err := queryLokiQuery(client, baseURL, query, window)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(logs) > 0 {
+			return logs, anomalies, nil
+		}
+	}
+	return nil, nil, lastErr
+}
+
+func queryLokiQuery(client *http.Client, baseURL, query string, window time.Duration) ([]LogEvent, []LogAnomaly, error) {
 	values := url.Values{}
-	values.Set("query", `{service_name=`+strconv.Quote(service)+`,level=~"error|warn"}`)
+	values.Set("query", query)
 	values.Set("limit", "20")
 	now := time.Now()
 	values.Set("start", strconv.FormatInt(now.Add(-window).UnixNano(), 10))
@@ -403,41 +455,66 @@ func queryLoki(client *http.Client, baseURL, service string, window time.Duratio
 		} `json:"data"`
 	}
 	if err := getJSON(client, baseURL, "/loki/api/v1/query_range", values, &payload); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []LogAnomaly
+	var logs []LogEvent
+	var anomalies []LogAnomaly
 	for _, stream := range payload.Data.Result {
 		for _, value := range stream.Values {
 			if len(value) < 2 {
 				continue
 			}
-			anomaly := LogAnomaly{
+			event := LogEvent{
 				ServiceName: stream.Stream["service_name"],
 				Level:       stream.Stream["level"],
-				Problem:     "error_or_warning_log",
+				TraceID:     stream.Stream["trace_id"],
+				SpanID:      stream.Stream["span_id"],
+				RequestID:   stream.Stream["http_request_header_x_request_id"],
 			}
 			var structured map[string]any
 			if json.Unmarshal([]byte(value[1]), &structured) == nil {
-				anomaly.TraceID, _ = structured["trace_id"].(string)
-				anomaly.SpanID, _ = structured["span_id"].(string)
-				anomaly.Message, _ = structured["message"].(string)
-				if anomaly.TraceID == "" {
-					anomaly.Problem = "log_missing_trace_id"
+				if event.TraceID == "" {
+					event.TraceID, _ = structured["trace_id"].(string)
+				}
+				if event.SpanID == "" {
+					event.SpanID, _ = structured["span_id"].(string)
+				}
+				if event.RequestID == "" {
+					event.RequestID, _ = structured["http_request_header_x_request_id"].(string)
+				}
+				event.Message, _ = structured["message"].(string)
+				if event.Level == "" {
+					event.Level, _ = structured["severity_text"].(string)
 				}
 			} else {
-				anomaly.Message = value[1]
-				if !strings.Contains(value[1], "trace_id") {
-					anomaly.Problem = "unstructured_log_missing_trace_id"
-				}
+				event.Message = value[1]
 			}
-			out = append(out, anomaly)
+			if event.Message == "" {
+				event.Message = value[1]
+			}
+			logs = append(logs, event)
+			level := strings.ToLower(strings.TrimSpace(event.Level))
+			if level == "error" || level == "warn" || level == "warning" {
+				problem := "error_or_warning_log"
+				if event.TraceID == "" {
+					problem = "log_missing_trace_id"
+				}
+				anomalies = append(anomalies, LogAnomaly{
+					ServiceName: event.ServiceName,
+					Level:       event.Level,
+					TraceID:     event.TraceID,
+					SpanID:      event.SpanID,
+					Message:     event.Message,
+					Problem:     problem,
+				})
+			}
 		}
 	}
-	return out, nil
+	return logs, anomalies, nil
 }
 
 func queryPrometheus(client *http.Client, baseURL, service, window string) ([]MetricSample, error) {
-	expr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{service_name=` + strconv.Quote(service) + `}[` + window + `])) by (le, http_route, route, path)))`
+	expr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=` + strconv.Quote(service) + `}[` + window + `])) by (le, http_route, route, path)))`
 	sample, err := prometheusFirst(client, baseURL, expr)
 	if err != nil {
 		return nil, err
@@ -445,10 +522,22 @@ func queryPrometheus(client *http.Client, baseURL, service, window string) ([]Me
 	if sample.Name == "" {
 		return nil, nil
 	}
+	sample.Unit = "milliseconds"
 	return []MetricSample{sample}, nil
 }
 
 func prometheusFirst(client *http.Client, baseURL, expr string) (MetricSample, error) {
+	val, metric, found, err := prometheusScalar(client, baseURL, expr)
+	if err != nil {
+		return MetricSample{}, err
+	}
+	if !found {
+		return MetricSample{}, nil
+	}
+	return MetricSample{Name: "http_p95_latency", Metric: metric, Unit: "milliseconds", Value: val}, nil
+}
+
+func prometheusScalar(client *http.Client, baseURL, expr string) (float64, map[string]string, bool, error) {
 	values := url.Values{}
 	values.Set("query", expr)
 	var payload struct {
@@ -461,12 +550,101 @@ func prometheusFirst(client *http.Client, baseURL, expr string) (MetricSample, e
 		} `json:"data"`
 	}
 	if err := getJSON(client, baseURL, "/api/v1/query", values, &payload); err != nil {
-		return MetricSample{}, err
+		return 0, nil, false, err
 	}
 	if payload.Status != "success" || len(payload.Data.Result) == 0 || len(payload.Data.Result[0].Value) < 2 {
-		return MetricSample{}, nil
+		return 0, nil, false, nil
 	}
-	raw, _ := payload.Data.Result[0].Value[1].(string)
-	value, _ := strconv.ParseFloat(raw, 64)
-	return MetricSample{Name: "http_p95_latency", Metric: payload.Data.Result[0].Metric, Value: value}, nil
+	raw, ok := payload.Data.Result[0].Value[1].(string)
+	if !ok {
+		if f, ok := payload.Data.Result[0].Value[1].(float64); ok {
+			return f, payload.Data.Result[0].Metric, true, nil
+		}
+		return 0, nil, false, nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, nil, false, err
+	}
+	return value, payload.Data.Result[0].Metric, true, nil
 }
+
+func querySaturation(client *http.Client, baseURL, service, window string) (*SaturationEvidence, []MetricSample, error) {
+	serviceQuote := strconv.Quote(service)
+	var errs []string
+
+	rateLimit429, _, found429, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(increase(http_server_duration_milliseconds_count{service_name=%s, status=\"429\"}[%s]))", serviceQuote, window))
+	if err != nil || !found429 || rateLimit429 == 0 {
+		fallbackVal, _, fallbackFound, fallbackErr := prometheusScalar(client, baseURL, fmt.Sprintf("sum(rate(http_server_duration_milliseconds_count{service_name=%s, status=\"429\"}[%s]))", serviceQuote, window))
+		if fallbackErr == nil && fallbackFound && fallbackVal > 0 {
+			rateLimit429 = fallbackVal
+		} else if err != nil && fallbackErr != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+
+	dbWaiting, _, _, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(db_client_connections_usage{service_name=%s, state=\"waiting\"})", serviceQuote))
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	dbActive, _, _, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(db_client_connections_usage{service_name=%s, state=\"used\"})", serviceQuote))
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	dbIdle, _, _, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(db_client_connections_usage{service_name=%s, state=\"idle\"})", serviceQuote))
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	queueLag, _, _, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(messaging_client_backlog_messages{service_name=%s})", serviceQuote))
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	memSlope, _, _, err := prometheusScalar(client, baseURL, fmt.Sprintf("deriv(process_resident_memory_bytes{service_name=%s}[%s])", serviceQuote, window))
+	if err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	var overallErr error
+	if len(errs) > 0 {
+		overallErr = fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+
+	var sat *SaturationEvidence
+	if rateLimit429 > 0 || dbWaiting > 0 || dbActive > 0 || dbIdle > 0 || queueLag > 0 || memSlope != 0 {
+		sat = &SaturationEvidence{
+			RateLimit429Count:    rateLimit429,
+			DBPoolWaiting:        dbWaiting,
+			DBPoolActive:         dbActive,
+			DBPoolIdle:           dbIdle,
+			QueueLag:             queueLag,
+			MemoryGrowthBytesSec: memSlope,
+		}
+	}
+
+	var samples []MetricSample
+	if rateLimit429 > 0 {
+		samples = append(samples, MetricSample{Name: "rate_limit_429_count", Unit: "count", Value: rateLimit429})
+	}
+	if dbWaiting > 0 {
+		samples = append(samples, MetricSample{Name: "db_pool_waiting", Unit: "connections", Value: dbWaiting})
+	}
+	if dbActive > 0 {
+		samples = append(samples, MetricSample{Name: "db_pool_active", Unit: "connections", Value: dbActive})
+	}
+	if dbIdle > 0 {
+		samples = append(samples, MetricSample{Name: "db_pool_idle", Unit: "connections", Value: dbIdle})
+	}
+	if queueLag > 0 {
+		samples = append(samples, MetricSample{Name: "queue_lag", Unit: "messages", Value: queueLag})
+	}
+	if memSlope != 0 {
+		samples = append(samples, MetricSample{Name: "memory_growth_bytes_sec", Unit: "bytes/sec", Value: memSlope})
+	}
+
+	return sat, samples, overallErr
+}
+

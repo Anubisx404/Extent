@@ -18,6 +18,16 @@ type Snapshot struct {
 	CapturedAt   time.Time              `json:"capturedAt"`
 	ServiceName  string                 `json:"serviceName"`
 	Measurements map[string]Measurement `json:"measurements"`
+	LoadProfile  *LoadProfile           `json:"loadProfile,omitempty"`
+}
+
+type LoadProfile struct {
+	DurationSeconds float64 `json:"durationSeconds,omitempty"`
+	Concurrency     int     `json:"concurrency,omitempty"`
+	ThroughputRPS   float64 `json:"throughputRps,omitempty"`
+	TotalRequests   int     `json:"totalRequests,omitempty"`
+	ErrorRate       float64 `json:"errorRate,omitempty"`
+	P99LatencyMS    float64 `json:"p99LatencyMs,omitempty"`
 }
 
 const CurrentVersion = 1
@@ -29,10 +39,12 @@ type Measurement struct {
 }
 
 type Comparison struct {
-	Before  Snapshot         `json:"before"`
-	After   Snapshot         `json:"after"`
-	Deltas  map[string]Delta `json:"deltas"`
-	Summary string           `json:"summary"`
+	Before         Snapshot         `json:"before"`
+	After          Snapshot         `json:"after"`
+	Deltas         map[string]Delta `json:"deltas"`
+	Summary        string           `json:"summary"`
+	LoadRegression bool             `json:"loadRegression,omitempty"`
+	LoadSummary    string           `json:"loadSummary,omitempty"`
 }
 
 type Delta struct {
@@ -102,6 +114,11 @@ func validate(s Snapshot) error {
 	if strings.TrimSpace(s.ServiceName) == "" || s.CapturedAt.IsZero() || len(s.Measurements) == 0 {
 		return fmt.Errorf("invalid baseline snapshot")
 	}
+	if s.LoadProfile != nil {
+		if s.LoadProfile.Concurrency < 0 || s.LoadProfile.DurationSeconds < 0 {
+			return fmt.Errorf("invalid baseline load profile")
+		}
+	}
 	measured := 0
 	for name, measurement := range s.Measurements {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(measurement.Unit) == "" {
@@ -143,5 +160,21 @@ func Compare(before, after Snapshot) Comparison {
 		comparison.Deltas[name] = delta
 	}
 	comparison.Summary = fmt.Sprintf("Before vs after: %d comparable measured dimension(s); unavailable or unknown dimensions were excluded.", comparable)
+	if before.LoadProfile != nil && after.LoadProfile != nil {
+		if after.LoadProfile.P99LatencyMS > before.LoadProfile.P99LatencyMS*1.2 || after.LoadProfile.ErrorRate > before.LoadProfile.ErrorRate+0.05 {
+			comparison.LoadRegression = true
+		}
+		status := "stable"
+		if comparison.LoadRegression {
+			status = "regression detected"
+		}
+		comparison.LoadSummary = fmt.Sprintf("Load profile (%s): throughput %.1f -> %.1f RPS, p99 latency %.1f -> %.1f ms, error rate %.2f%% -> %.2f%%",
+			status,
+			before.LoadProfile.ThroughputRPS, after.LoadProfile.ThroughputRPS,
+			before.LoadProfile.P99LatencyMS, after.LoadProfile.P99LatencyMS,
+			before.LoadProfile.ErrorRate*100, after.LoadProfile.ErrorRate*100,
+		)
+		comparison.Summary = fmt.Sprintf("%s Load profile: %s", comparison.Summary, comparison.LoadSummary)
+	}
 	return comparison
 }

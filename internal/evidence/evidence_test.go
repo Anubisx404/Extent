@@ -26,12 +26,20 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 			if !strings.Contains(r.URL.Query().Get("query"), `service_name="checkout"`) {
 				t.Fatalf("unscoped Loki query: %s", r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"status":"success","data":{"result":[{"stream":{"level":"error","service_name":"checkout"},"values":[["1","{\"trace_id\":\"trace-1\",\"span_id\":\"span-1\",\"message\":\"payment failed\"}"]]}]}}`))
+			if !strings.Contains(r.URL.Query().Get("query"), "http_request_header_x_request_id") {
+				t.Fatalf("expected correlated Loki query, got: %s", r.URL.Query().Get("query"))
+			}
+			w.Write([]byte(`{"status":"success","data":{"result":[{"stream":{"level":"error","service_name":"checkout","http_request_header_x_request_id":"req-1"},"values":[["1","{\"trace_id\":\"trace-1\",\"span_id\":\"span-1\",\"message\":\"payment failed\"}"]]}]}}`))
 		case "/api/v1/query":
 			if !strings.Contains(r.URL.Query().Get("query"), `service_name="checkout"`) {
 				t.Fatalf("unscoped Prometheus query: %s", r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{"route":"/checkout"},"value":[1,"1.8"]}]}}`))
+			if strings.Contains(r.URL.Query().Get("query"), "http_server_duration_milliseconds_bucket") {
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{"route":"/checkout"},"value":[1,"1.8"]}]}}`))
+				return
+			}
+			w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -45,6 +53,12 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 	}
 	if len(result.LogAnomalies) != 1 || result.LogAnomalies[0].TraceID != "trace-1" {
 		t.Fatalf("expected Loki log anomaly with trace id, got %#v", result.LogAnomalies)
+	}
+	if len(result.Logs) != 1 || result.Logs[0].Message != "payment failed" {
+		t.Fatalf("expected Loki log event, got %#v", result.Logs)
+	}
+	if result.Logs[0].RequestID != "req-1" {
+		t.Fatalf("expected Loki request correlation, got %#v", result.Logs[0])
 	}
 	if len(result.Metrics) != 1 || result.Metrics[0].Name != "http_p95_latency" {
 		t.Fatalf("expected Prometheus metric evidence, got %#v", result.Metrics)
@@ -61,7 +75,54 @@ func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
 	if len(result.QueueFindings) != 1 || result.QueueFindings[0].System != "rabbitmq" {
 		t.Fatalf("expected queue evidence, got %#v", result.QueueFindings)
 	}
-	if len(result.Provenance) != 3 {
+	if len(result.Provenance) != 4 {
 		t.Fatalf("expected source provenance, got %#v", result.Provenance)
 	}
 }
+
+func TestCollectPullsSaturationAndSlopeEvidence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/search":
+			w.Write([]byte(`{"traces":[]}`))
+		case "/loki/api/v1/query_range":
+			w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+		case "/api/v1/query":
+			q := r.URL.Query().Get("query")
+			switch {
+			case strings.Contains(q, "429"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{},"value":[1,"15.0"]}]}}`))
+			case strings.Contains(q, "db_client_connections") || strings.Contains(q, "waiting"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{},"value":[1,"8.0"]}]}}`))
+			case strings.Contains(q, "backlog") || strings.Contains(q, "lag") || strings.Contains(q, "queue"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{},"value":[1,"120.0"]}]}}`))
+			case strings.Contains(q, "deriv"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{},"value":[1,"1048576.0"]}]}}`))
+			default:
+				w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	result := Collect(Config{PrometheusURL: server.URL, LokiURL: server.URL, TempoURL: server.URL, Window: "10m", ServiceName: "checkout"})
+
+	if result.Saturation == nil {
+		t.Fatalf("expected saturation evidence, got nil")
+	}
+	if result.Saturation.RateLimit429Count != 15.0 {
+		t.Fatalf("expected RateLimit429Count 15.0, got %f", result.Saturation.RateLimit429Count)
+	}
+	if result.Saturation.DBPoolWaiting != 8.0 {
+		t.Fatalf("expected DBPoolWaiting 8.0, got %f", result.Saturation.DBPoolWaiting)
+	}
+	if result.Saturation.QueueLag != 120.0 {
+		t.Fatalf("expected QueueLag 120.0, got %f", result.Saturation.QueueLag)
+	}
+	if result.Saturation.MemoryGrowthBytesSec != 1048576.0 {
+		t.Fatalf("expected MemoryGrowthBytesSec 1048576.0, got %f", result.Saturation.MemoryGrowthBytesSec)
+	}
+}
+

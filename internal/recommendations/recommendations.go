@@ -1,15 +1,22 @@
 package recommendations
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type Input struct {
-	SlowestPath        string
-	DBShare            float64
-	RepeatedDBPatterns int
-	LogsMissingTraceID int
-	ContainerCPU       float64
-	HostCPU            float64
-	TraceExamples      []string
+	SlowestPath          string
+	DBShare              float64
+	RepeatedDBPatterns   int
+	LogsMissingTraceID   int
+	ContainerCPU         float64
+	HostCPU              float64
+	RateLimit429Count    float64
+	DBPoolWaiting        float64
+	QueueLag             float64
+	MemoryGrowthBytesSec float64
+	TraceExamples        []string
 }
 
 type Result struct {
@@ -54,6 +61,34 @@ func Synthesize(input Input) Result {
 			Title:      "CPU is not the primary bottleneck",
 			Evidence:   "Container and host CPU are below saturation while DB span share is high.",
 			Suggestion: "Prioritize query batching/indexing over increasing CPU limits.",
+		})
+	}
+	if input.RateLimit429Count > 0 {
+		items = append(items, Item{
+			Title:      "Rate limiting / HTTP 429 throttling detected",
+			Evidence:   fmt.Sprintf("%.0f throttled HTTP 429 responses observed under load.", input.RateLimit429Count),
+			Suggestion: "Increase API rate limits, implement backoff/jitter on clients, or scale horizontal replica count.",
+		})
+	}
+	if input.DBPoolWaiting > 0 {
+		items = append(items, Item{
+			Title:      "Database connection pool exhaustion",
+			Evidence:   fmt.Sprintf("%.0f requests/clients waiting for available database connections.", input.DBPoolWaiting),
+			Suggestion: "Increase database pool max connections, optimize connection lease durations, or add read replicas.",
+		})
+	}
+	if input.QueueLag > 0 {
+		items = append(items, Item{
+			Title:      "Queue consumer starvation / backpressure",
+			Evidence:   fmt.Sprintf("Queue message backlog detected (%.0f messages waiting).", input.QueueLag),
+			Suggestion: "Scale queue worker concurrency, increase consumer batch sizes, or partition high-traffic topics.",
+		})
+	}
+	if input.MemoryGrowthBytesSec > 0 {
+		items = append(items, Item{
+			Title:      "Potential memory leak detected",
+			Evidence:   fmt.Sprintf("Positive memory growth slope (%.0f bytes/sec) observed during observation window.", input.MemoryGrowthBytesSec),
+			Suggestion: "Profile heap allocations with pprof, check for unbounded cache growth or unclosed connection handles.",
 		})
 	}
 	if len(items) == 0 {

@@ -1,0 +1,90 @@
+name: Generated Acceptance
+
+concurrency:
+  group: generated-acceptance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  generated-fixtures:
+    name: Generated Fixtures / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: "20"
+      - name: Verify generated project transactions
+        run: python scripts/verify-generated.py
+
+  live-lgtm:
+    name: Live LGTM Stack Acceptance
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Build Extent CLI
+        run: go build -o bin/extent ./cmd/extent
+      - name: Create temporary target and generate stack
+        shell: bash
+        run: |
+          TARGET_DIR="$(mktemp -d)"
+          echo "TARGET_DIR=${TARGET_DIR}" >> "$GITHUB_ENV"
+          cp -r baseline_test/node-express/* "${TARGET_DIR}"
+          ./bin/extent scan "${TARGET_DIR}"
+          ./bin/extent plan "${TARGET_DIR}"
+          ./bin/extent apply --force "${TARGET_DIR}"
+          ./bin/extent instrument --mode bootstrap --apply "${TARGET_DIR}"
+          ./bin/extent verify "${TARGET_DIR}"
+      - name: Validate Compose static syntax
+        shell: bash
+        run: |
+          docker compose -f "${TARGET_DIR}/docker-compose.observability.yml" config --quiet
+      - name: Docker preflight and stack startup
+        shell: bash
+        run: |
+          docker --version
+          docker compose version
+          docker info
+          ./bin/extent stack up --wait "${TARGET_DIR}"
+          ./bin/extent stack status "${TARGET_DIR}"
+      - name: Service telemetry validation preflight
+        shell: bash
+        run: |
+          echo "Observability stack is active and healthy."
+          echo "Telemetry verification note: target service runtime fixture is not running in background container; live trace/metric smoke tests require active service."
+      - name: Teardown temporary stack
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${TARGET_DIR:-}" ] && [ -d "${TARGET_DIR}" ]; then
+            if [ -f "${TARGET_DIR}/docker-compose.observability.yml" ]; then
+              ./bin/extent stack down "${TARGET_DIR}" || docker compose -f "${TARGET_DIR}/docker-compose.observability.yml" down -v || true
+            fi
+            rm -rf "${TARGET_DIR}"
+          fi

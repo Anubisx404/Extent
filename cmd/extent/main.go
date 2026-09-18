@@ -304,6 +304,7 @@ func runApply(args []string) error {
 func runAnalyze(args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON output")
+	dynamic := fs.Bool("dynamic", false, "attempt runtime reflection for registered framework routes")
 	if help, err := parseFlags(fs, args); help || err != nil {
 		return err
 	}
@@ -311,7 +312,7 @@ func runAnalyze(args []string) error {
 		return err
 	}
 	root := firstArgOrDot(fs.Args())
-	result, err := analyzer.Analyze(root)
+	result, err := analyzer.AnalyzeWithOptions(root, analyzer.Options{Dynamic: *dynamic})
 	if err != nil {
 		return err
 	}
@@ -508,6 +509,9 @@ func runSmoke(args []string) error {
 	lokiURL := fs.String("loki", "http://localhost:3100", "Loki base URL")
 	serviceName := fs.String("service", "", "target service.name for correlated trace verification")
 	requests := fs.Int("requests", 3, "number of app requests to send")
+	duration := fs.Duration("duration", 0, "sustained soak duration")
+	concurrency := fs.Int("concurrency", 1, "concurrent synthetic request workers")
+	rateLimit := fs.Float64("rate", 0, "rate limit in requests per second")
 	jsonOut := fs.Bool("json", false, "print JSON output")
 	if help, err := parseFlags(fs, args); help || err != nil {
 		return err
@@ -515,8 +519,19 @@ func runSmoke(args []string) error {
 	if err := validatePositional("smoke", fs.Args(), 0); err != nil {
 		return err
 	}
-	if err := validateRequests(*requests); err != nil {
-		return err
+	if *duration <= 0 {
+		if err := validateRequests(*requests); err != nil {
+			return err
+		}
+	}
+	if *duration < 0 {
+		return usageError("--duration cannot be negative")
+	}
+	if *concurrency < 1 {
+		return usageError("--concurrency must be at least 1")
+	}
+	if *rateLimit < 0 {
+		return usageError("--rate cannot be negative")
 	}
 	if strings.TrimSpace(*targetURL) == "" {
 		return errors.New("smoke requires --url")
@@ -524,7 +539,17 @@ func runSmoke(args []string) error {
 	if strings.TrimSpace(*serviceName) == "" {
 		return usageError("smoke requires --service for target-specific verification")
 	}
-	report := smoke.Run(smoke.Config{URL: *targetURL, PrometheusURL: *promURL, TempoURL: *tempoURL, LokiURL: *lokiURL, ServiceName: *serviceName, Requests: *requests})
+	report := smoke.Run(smoke.Config{
+		URL:           *targetURL,
+		PrometheusURL: *promURL,
+		TempoURL:      *tempoURL,
+		LokiURL:       *lokiURL,
+		ServiceName:   *serviceName,
+		Requests:      *requests,
+		Duration:      *duration,
+		Concurrency:   *concurrency,
+		RateLimit:     *rateLimit,
+	})
 	if *jsonOut {
 		if err := writeJSON(report); err != nil {
 			return err
@@ -550,6 +575,9 @@ func runSmoke(args []string) error {
 		}
 		fmt.Println()
 	}
+	if report.DurationElapsed > 0 || report.TotalRequests > 0 {
+		fmt.Printf("Throughput: %.1f RPS (%d requests in %s)\n", report.RPS, report.TotalRequests, report.DurationElapsed.Round(time.Millisecond))
+	}
 	if !report.OK {
 		return verificationError("telemetry smoke verification failed")
 	}
@@ -567,6 +595,10 @@ func runReport(args []string) error {
 	compare := fs.String("compare", "", "compare against a baseline file or the word baseline")
 	includeData := fs.Bool("include-data", false, "include raw gathered app data appendix")
 	jsonOut := fs.Bool("json", false, "print JSON output")
+	soak := fs.Duration("soak", 0, "sustained soak duration")
+	targetURL := fs.String("url", "", "target application URL for soak testing")
+	concurrency := fs.Int("concurrency", 1, "concurrent synthetic request workers for soak testing")
+	rateLimit := fs.Float64("rate", 0, "rate limit in requests per second for soak testing")
 	if help, err := parseFlags(fs, args); help || err != nil {
 		return err
 	}
@@ -579,6 +611,18 @@ func runReport(args []string) error {
 	if strings.TrimSpace(*serviceName) == "" {
 		return usageError("report requires --service for target-scoped evidence")
 	}
+	if *soak > 0 && strings.TrimSpace(*targetURL) == "" {
+		return usageError("report --soak requires --url")
+	}
+	if *soak < 0 {
+		return usageError("--soak cannot be negative")
+	}
+	if *concurrency < 1 {
+		return usageError("--concurrency must be at least 1")
+	}
+	if *rateLimit < 0 {
+		return usageError("--rate cannot be negative")
+	}
 	root := firstArgOrDot(fs.Args())
 	baselinePath := ""
 	if *compare == "baseline" {
@@ -586,7 +630,19 @@ func runReport(args []string) error {
 	} else if strings.TrimSpace(*compare) != "" {
 		baselinePath = *compare
 	}
-	report := reporter.Build(reporter.Config{PrometheusURL: *promURL, LokiURL: *lokiURL, TempoURL: *tempoURL, IncludeEvidence: *lokiURL != "" || *tempoURL != "", BaselinePath: baselinePath, ServiceName: *serviceName, Window: *last})
+	report := reporter.Build(reporter.Config{
+		PrometheusURL:   *promURL,
+		LokiURL:         *lokiURL,
+		TempoURL:        *tempoURL,
+		IncludeEvidence: *lokiURL != "" || *tempoURL != "",
+		BaselinePath:    baselinePath,
+		ServiceName:     *serviceName,
+		Window:          *last,
+		SoakDuration:    *soak,
+		TargetURL:       *targetURL,
+		Concurrency:     *concurrency,
+		RateLimit:       *rateLimit,
+	})
 	if *includeData {
 		report.ApplicationData = gatherApplicationData(root, baselinePath, report)
 	}
@@ -614,6 +670,9 @@ func runReport(args []string) error {
 		return nil
 	}
 	fmt.Println(report.Summary)
+	if report.SoakResult != nil {
+		fmt.Printf("Soak Performance: %.1f RPS (%d requests in %s)\n", report.SoakResult.RPS, report.SoakResult.TotalRequests, report.SoakResult.DurationElapsed.Round(time.Millisecond))
+	}
 	if len(report.Warnings) > 0 {
 		fmt.Println()
 		fmt.Println("Warnings:")
@@ -643,6 +702,7 @@ func gatherApplicationData(root, baselinePath string, report reporter.Report) ma
 			"comparison":         report.Comparison,
 			"warnings":           report.Warnings,
 			"measurements":       report.Measurements,
+			"soakResult":         report.SoakResult,
 		},
 	}
 	if scan, err := scanner.Scan(root); err == nil {
@@ -816,7 +876,7 @@ func printUsage() {
 
 Usage:
   extent scan [--json] [repo]
-  extent analyze [--json] [repo]
+  extent analyze [--json] [--dynamic] [repo]
   extent plan [--json] [repo]
   extent apply [--branch name] [--force] [--profile name] [repo]
   extent instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]

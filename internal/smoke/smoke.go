@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Anubisx404/Extent/internal/observability"
@@ -28,13 +29,21 @@ type Config struct {
 	ExpectedMax       int
 	CorrelationHeader string
 	SettleTimeout     time.Duration
+	Duration          time.Duration
+	Concurrency       int
+	RateLimit         float64
 }
 
 type Report struct {
-	OK             bool    `json:"ok"`
-	TargetVerified bool    `json:"targetVerified"`
-	CorrelationID  string  `json:"correlationId,omitempty"`
-	Checks         []Check `json:"checks"`
+	OK                 bool          `json:"ok"`
+	TargetVerified     bool          `json:"targetVerified"`
+	CorrelationID      string        `json:"correlationId,omitempty"`
+	Checks             []Check       `json:"checks"`
+	TotalRequests      int           `json:"totalRequests,omitempty"`
+	DurationElapsed    time.Duration `json:"durationElapsed,omitempty"`
+	RPS                float64       `json:"rps,omitempty"`
+	StatusDistribution map[int]int   `json:"statusDistribution,omitempty"`
+	Concurrency        int           `json:"concurrency,omitempty"`
 }
 
 type Check struct {
@@ -52,6 +61,9 @@ func Run(config Config) Report {
 	}
 	if config.Requests <= 0 {
 		config.Requests = 3
+	}
+	if config.Concurrency <= 0 {
+		config.Concurrency = 1
 	}
 	if config.ExpectedMin == 0 {
 		config.ExpectedMin = 200
@@ -99,24 +111,150 @@ func Run(config Config) Report {
 		targetMetricBefore, targetMetricBeforeErr = queryPrometheus(client, config.PrometheusURL, targetMetricExpression)
 	}
 	checks := []Check{}
-	for i := 0; i < config.Requests; i++ {
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	statusDist := make(map[int]int)
+	totalRequests := 0
+	var firstReqErr error
+	unexpectedStatusCount := 0
+
+	startTime := time.Now()
+
+	var ticker *time.Ticker
+	if config.RateLimit > 0 {
+		ticker = time.NewTicker(time.Duration(float64(time.Second) / config.RateLimit))
+		defer ticker.Stop()
+	}
+
+	sendOne := func() bool {
 		req, err := http.NewRequest(http.MethodGet, target.String(), nil)
 		if err != nil {
-			return Report{OK: false, Checks: []Check{{Name: "app request", OK: false, Detail: err.Error()}}}
+			mu.Lock()
+			if firstReqErr == nil {
+				firstReqErr = err
+			}
+			mu.Unlock()
+			return false
 		}
 		req.Header.Set(config.CorrelationHeader, token)
 		req.Header.Set("traceparent", "00-"+token+"-"+token[:16]+"-01")
 		resp, err := client.Do(req)
 		if err != nil {
-			return Report{OK: false, Checks: []Check{{Name: "app request", OK: false, Detail: err.Error()}}}
+			mu.Lock()
+			if firstReqErr == nil {
+				firstReqErr = err
+			}
+			mu.Unlock()
+			return false
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+
+		mu.Lock()
+		totalRequests++
+		statusDist[resp.StatusCode]++
 		if resp.StatusCode < config.ExpectedMin || resp.StatusCode > config.ExpectedMax {
-			return Report{OK: false, Checks: []Check{{Name: "app request", OK: false, Detail: fmt.Sprintf("request returned %s (expected %d-%d)", resp.Status, config.ExpectedMin, config.ExpectedMax)}}}
+			unexpectedStatusCount++
+		}
+		mu.Unlock()
+		return true
+	}
+
+	if config.Duration > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), config.Duration)
+		defer cancel()
+
+		for w := 0; w < config.Concurrency; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					if ticker != nil {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+						}
+					}
+					if !sendOne() && firstReqErr != nil {
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	} else {
+		jobs := make(chan struct{}, config.Requests)
+		for i := 0; i < config.Requests; i++ {
+			jobs <- struct{}{}
+		}
+		close(jobs)
+
+		for w := 0; w < config.Concurrency; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range jobs {
+					if ticker != nil {
+						<-ticker.C
+					}
+					if !sendOne() && firstReqErr != nil {
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	durationElapsed := time.Since(startTime)
+	rps := 0.0
+	if durationElapsed.Seconds() > 0 {
+		rps = float64(totalRequests) / durationElapsed.Seconds()
+	}
+
+	if totalRequests == 0 && firstReqErr != nil {
+		return Report{
+			OK:                 false,
+			TargetVerified:     false,
+			CorrelationID:      token,
+			Checks:             []Check{{Name: "app request", OK: false, Detail: firstReqErr.Error()}},
+			TotalRequests:      totalRequests,
+			DurationElapsed:    durationElapsed,
+			RPS:                rps,
+			StatusDistribution: statusDist,
+			Concurrency:        config.Concurrency,
 		}
 	}
-	checks = append(checks, Check{Name: "synthetic app requests", OK: true, Status: "passed", Scope: "target", Value: float64(config.Requests), Detail: fmt.Sprintf("%d request(s) returned %d-%d", config.Requests, config.ExpectedMin, config.ExpectedMax)})
+
+	if unexpectedStatusCount > 0 {
+		checks = append(checks, Check{
+			Name:   "synthetic app requests",
+			OK:     false,
+			Status: "failed",
+			Scope:  "target",
+			Value:  float64(totalRequests),
+			Detail: fmt.Sprintf("%d request(s) returned status outside expected range %d-%d", unexpectedStatusCount, config.ExpectedMin, config.ExpectedMax),
+		})
+	} else {
+		checks = append(checks, Check{
+			Name:   "synthetic app requests",
+			OK:     true,
+			Status: "passed",
+			Scope:  "target",
+			Value:  float64(totalRequests),
+			Detail: fmt.Sprintf("%d request(s) returned %d-%d", totalRequests, config.ExpectedMin, config.ExpectedMax),
+		})
+	}
+	if firstReqErr != nil {
+		checks = append(checks, Check{Name: "app request", OK: false, Status: "failed", Scope: "target", Detail: firstReqErr.Error()})
+	}
 
 	after := make(map[string]float64, len(queries))
 	afterErr := make(map[string]error, len(queries))
@@ -255,7 +393,17 @@ func Run(config Config) Report {
 			break
 		}
 	}
-	return Report{OK: ok, TargetVerified: targetVerified, CorrelationID: token, Checks: checks}
+	return Report{
+		OK:                 ok,
+		TargetVerified:     targetVerified,
+		CorrelationID:      token,
+		Checks:             checks,
+		TotalRequests:      totalRequests,
+		DurationElapsed:    durationElapsed,
+		RPS:                rps,
+		StatusDistribution: statusDist,
+		Concurrency:        config.Concurrency,
+	}
 }
 
 func queryTempoCorrelation(client *http.Client, baseURL, service, token string) (int, error) {

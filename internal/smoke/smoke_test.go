@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -88,5 +89,40 @@ func TestRunFailsWhenPrometheusCountersAreZero(t *testing.T) {
 	report := Run(Config{URL: app.URL, PrometheusURL: prom.URL, Requests: 1, SettleTimeout: 10 * time.Millisecond})
 	if report.OK {
 		t.Fatalf("expected smoke report to fail on zero counters, got %#v", report)
+	}
+}
+
+func TestRunConcurrentDurationAndStatusDistribution(t *testing.T) {
+	var hitCounter atomic.Int64
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := hitCounter.Add(1)
+		if count%5 == 0 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	cfg := Config{
+		URL:           app.URL,
+		Duration:      250 * time.Millisecond,
+		Concurrency:   3,
+		SettleTimeout: 10 * time.Millisecond,
+	}
+
+	report := Run(cfg)
+
+	if report.TotalRequests <= 3 {
+		t.Fatalf("expected TotalRequests > 3, got %d", report.TotalRequests)
+	}
+	if len(report.StatusDistribution) == 0 {
+		t.Fatalf("expected StatusDistribution to have entries, got %#v", report.StatusDistribution)
+	}
+	if report.DurationElapsed <= 0 {
+		t.Fatalf("expected DurationElapsed > 0, got %v", report.DurationElapsed)
+	}
+	if report.RPS <= 0 {
+		t.Fatalf("expected RPS > 0, got %f", report.RPS)
 	}
 }

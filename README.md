@@ -224,22 +224,22 @@ go run ./cmd/extent verify --url http://localhost:8080/health --prometheus http:
 Send traffic and prove telemetry reached the Collector:
 
 ```powershell
-go run ./cmd/extent smoke --url http://localhost:8080/health --service checkout --prometheus http://localhost:9090 --tempo http://localhost:3200 --loki http://localhost:3100
+go run ./cmd/extent smoke --url http://localhost:8080/health --service checkout --duration 10s --concurrency 5 --prometheus http://localhost:9090 --tempo http://localhost:3200 --loki http://localhost:3100
 ```
 
 Generate a bottleneck report from Prometheus:
 
 ```powershell
-go run ./cmd/extent report --prometheus http://localhost:9090
-go run ./cmd/extent report --last 30m --format markdown --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 --include-data C:\path\to\repo
-go run ./cmd/extent report --last 1h --format html --prometheus http://localhost:9090 --compare baseline --include-data C:\path\to\repo
+go run ./cmd/extent report --service checkout --prometheus http://localhost:9090
+go run ./cmd/extent report --service checkout --soak 30s --url http://localhost:8080/health --concurrency 5 --format markdown --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 --include-data C:\path\to\repo
+go run ./cmd/extent report --service checkout --last 1h --format html --prometheus http://localhost:9090 --compare baseline --include-data C:\path\to\repo
 ```
 
 Capture and compare a baseline:
 
 ```powershell
-go run ./cmd/extent baseline --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 C:\path\to\repo
-go run ./cmd/extent report --compare baseline --format markdown
+go run ./cmd/extent baseline --service checkout --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 C:\path\to\repo
+go run ./cmd/extent report --service checkout --compare baseline --format markdown
 ```
 
 Check Loki label safety:
@@ -269,8 +269,8 @@ extent plan [--json] [repo]
 extent apply [--branch name] [--force] [--profile name] [repo]
 extent instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]
 extent deps [--install] [repo]
-extent smoke --url app-url --service service-name [--prometheus url] [--tempo url] [--loki url] [--requests n] [--json]
-extent report [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline] [--include-data] [--json] [repo]
+extent smoke --url app-url --service service-name [--duration duration] [--concurrency n] [--rate rps] [--prometheus url] [--tempo url] [--loki url] [--requests n] [--json]
+extent report --service service-name [--soak duration] [--url app-url] [--concurrency n] [--rate rps] [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline] [--include-data] [--json] [repo]
 extent baseline [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
 extent cardinality [--json] [repo]
 extent score [--prometheus url] [--json]
@@ -425,3 +425,9 @@ flowchart TD
     VerificationLayer --> COLLECTOR
     VerificationLayer --> BACKENDS
 ```
+
+## Documentation & Governance
+
+- [License](LICENSE)
+- [Contributing](CONTRIBUTING.md)
+- [Security Policy](SECURITY.md)
