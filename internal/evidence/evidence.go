@@ -647,4 +647,3 @@ func querySaturation(client *http.Client, baseURL, service, window string) (*Sat
 
 	return sat, samples, overallErr
 }
-

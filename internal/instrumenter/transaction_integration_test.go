@@ -121,6 +121,7 @@ func verifyGoGeneratedProject(t *testing.T) {
 func runIn(dir, name string, args ...string) error {
 	c := exec.Command(name, args...)
 	c.Dir = dir
+	c.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))

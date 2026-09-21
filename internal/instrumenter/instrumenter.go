@@ -28,8 +28,7 @@ type Options struct {
 	Undo            bool
 	ShowDiff        bool
 	RunDeepCodemods bool
-	// Entrypoint explicitly selects a bounded, project-relative entrypoint.
-	Entrypoint string
+	Entrypoint      string
 }
 
 type Result struct {
@@ -81,9 +80,9 @@ var goDependencyPins = []struct {
 	Path    string
 	Version string
 }{
-	{Path: "go.opentelemetry.io/otel", Version: "v1.44.0"},
-	{Path: "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", Version: "v1.44.0"},
-	{Path: "go.opentelemetry.io/otel/sdk", Version: "v1.44.0"},
+	{Path: "go.opentelemetry.io/otel", Version: "v1.35.0"},
+	{Path: "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", Version: "v1.35.0"},
+	{Path: "go.opentelemetry.io/otel/sdk", Version: "v1.35.0"},
 }
 
 var nodeDatabaseInstrumentation = map[string][]string{
@@ -134,8 +133,6 @@ func Instrument(root string, opts Options) (Result, error) {
 		result.ChangedFiles = plannedPaths(plan)
 		return result, nil
 	}
-	// Recheck bytes immediately before application; this also makes repeated
-	// invocations true no-ops when a formatter or filesystem normalizes data.
 	filtered := make([]fileops.Step, 0, len(plan.Steps))
 	for _, step := range plan.Steps {
 		before, readErr := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(step.Path)))
@@ -167,7 +164,6 @@ func operationKind(opts Options) string {
 	return "instrument/" + opts.Mode
 }
 
-// Plan performs all discovery and byte generation without mutating the project.
 func Plan(root string, opts Options) (fileops.Plan, string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -940,7 +936,6 @@ func init() {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
-// Shutdown flushes pending spans before the process exits.
 func Shutdown() {
 	if provider == nil {
 		return

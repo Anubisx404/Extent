@@ -125,4 +125,3 @@ func TestCollectPullsSaturationAndSlopeEvidence(t *testing.T) {
 		t.Fatalf("expected MemoryGrowthBytesSec 1048576.0, got %f", result.Saturation.MemoryGrowthBytesSec)
 	}
 }
-

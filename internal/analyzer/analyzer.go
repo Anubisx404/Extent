@@ -376,20 +376,20 @@ func detectSourceLoggers(file, text string) []string {
 	lower := strings.ToLower(text)
 	var loggers []string
 	for needle, logger := range map[string]string{
-		"slog.":                  "slog",
-		"zap.":                   "zap",
-		"zerolog.":               "zerolog",
-		"logrus.":                "logrus",
-		"pino(":                  "pino",
-		"pino.":                  "pino",
-		"winston.":               "winston",
-		"bunyan.":                "bunyan",
-		"structlog.":             "structlog",
-		"loguru.":                "loguru",
-		"logging.":               "python logging",
-		"loggerfactory.":         "slf4j",
-		"log4j":                  "log4j",
-		"serilog.":               "serilog",
+		"slog.":          "slog",
+		"zap.":           "zap",
+		"zerolog.":       "zerolog",
+		"logrus.":        "logrus",
+		"pino(":          "pino",
+		"pino.":          "pino",
+		"winston.":       "winston",
+		"bunyan.":        "bunyan",
+		"structlog.":     "structlog",
+		"loguru.":        "loguru",
+		"logging.":       "python logging",
+		"loggerfactory.": "slf4j",
+		"log4j":          "log4j",
+		"serilog.":       "serilog",
 	} {
 		if strings.Contains(lower, needle) {
 			loggers = append(loggers, logger)
@@ -405,22 +405,22 @@ func detectSourceHTTPClients(file, text string) []string {
 	lower := strings.ToLower(text)
 	var clients []string
 	for needle, client := range map[string]string{
-		"http.get(":         "net/http",
-		"http.post(":        "net/http",
-		"http.newrequest":   "net/http",
-		"http.client":       "net/http",
-		"axios.":            "axios",
-		"axios(":            "axios",
-		"got(":              "got",
-		"got.":              "got",
-		"undici.":           "undici",
-		"node-fetch":        "node-fetch",
-		"fetch(":            "fetch",
-		"requests.":         "requests",
-		"httpx.":            "httpx",
-		"aiohttp.":          "aiohttp",
-		"urllib.":           "urllib",
-		"resty.":            "resty",
+		"http.get(":       "net/http",
+		"http.post(":      "net/http",
+		"http.newrequest": "net/http",
+		"http.client":     "net/http",
+		"axios.":          "axios",
+		"axios(":          "axios",
+		"got(":            "got",
+		"got.":            "got",
+		"undici.":         "undici",
+		"node-fetch":      "node-fetch",
+		"fetch(":          "fetch",
+		"requests.":       "requests",
+		"httpx.":          "httpx",
+		"aiohttp.":        "aiohttp",
+		"urllib.":         "urllib",
+		"resty.":          "resty",
 	} {
 		if strings.Contains(lower, needle) {
 			clients = append(clients, client)

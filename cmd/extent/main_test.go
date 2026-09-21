@@ -247,4 +247,3 @@ func TestReportSoakRequiresURL(t *testing.T) {
 		t.Fatalf("expected error message to contain 'report --soak requires --url', got %v", err)
 	}
 }
-

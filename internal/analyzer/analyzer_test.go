@@ -154,4 +154,3 @@ networks:
 		t.Fatalf("expected exactly [ecommerce-net] network, got %#v", result.Docker.Networks)
 	}
 }
-

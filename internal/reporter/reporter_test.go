@@ -413,4 +413,3 @@ func TestRenderMarkdownAndHTMLWithSoakResult(t *testing.T) {
 		t.Fatalf("missing LoadSummary in html:\n%s", htmlOut)
 	}
 }
-

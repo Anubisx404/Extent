@@ -215,9 +215,9 @@ func TestGoEntrypointWithoutExistingImportsAndAmbiguity(t *testing.T) {
 	assertFileContains(t, filepath.Join(root, "internal/observability/otel.go"), "func Shutdown()")
 	assertFileContains(t, filepath.Join(root, "internal/observability/otel.go"), "otel.SetTextMapPropagator")
 	for _, pin := range []string{
-		"go.opentelemetry.io/otel v1.44.0",
-		"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0",
-		"go.opentelemetry.io/otel/sdk v1.44.0",
+		"go.opentelemetry.io/otel v1.35.0",
+		"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.35.0",
+		"go.opentelemetry.io/otel/sdk v1.35.0",
 	} {
 		assertFileContains(t, filepath.Join(root, "go.mod"), pin)
 	}
