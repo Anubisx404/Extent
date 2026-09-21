@@ -1,11 +1,14 @@
 name: aspnetcore
 runtime: dotnet
 support:
-  bootstrap: unsupported
+  bootstrap: stable
   deep: experimental
 detect:
   files:
     - "*.csproj"
+    - "*.sln"
+    - "*.slnx"
+    - "*.slnf"
   dependencies:
     - Microsoft.AspNetCore
 entrypoint:
@@ -13,7 +16,7 @@ entrypoint:
     - Program.cs
 inject:
   bootstrap:
-    file: ObservabilityExtensions.cs
+    file: ExtentObservabilityExtensions.cs
   middleware:
     target: WebApplication
   logger:

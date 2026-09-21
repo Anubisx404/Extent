@@ -19,6 +19,8 @@ func TestInstallCommandForPackageManagers(t *testing.T) {
 		{name: "yarn", managers: []string{"yarn"}, want: []string{"yarn", "install"}},
 		{name: "pip", managers: []string{"pip"}, want: []string{"python", "-m", "pip", "install", "-r", "requirements.txt"}},
 		{name: "go", managers: []string{"go-modules"}, want: []string{"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"}},
+		{name: "dotnet", managers: []string{"dotnet"}, want: []string{"dotnet", "restore"}},
+		{name: "nuget", managers: []string{"nuget"}, want: []string{"dotnet", "restore"}},
 	}
 
 	for _, tt := range tests {

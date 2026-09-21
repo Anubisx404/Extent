@@ -46,20 +46,33 @@ func VerifyConfig(config Config) Report {
 	if root == "" {
 		root = "."
 	}
-	checks := []Check{
-		fileCheck(root, "docker-compose.observability.yml"),
-		fileCheck(root, "otel-collector.yml"),
-		fileCheck(root, "tempo.yml"),
-		fileCheck(root, "loki.yml"),
-		fileCheck(root, "prometheus.yml"),
-		fileCheck(root, "prometheus-alerts.yml"),
-		fileCheck(root, "extent.yaml"),
-		fileCheck(root, ".env.observability"),
-		fileCheck(root, "grafana/provisioning/datasources/datasources.yml"),
-		fileCheck(root, "grafana/dashboards/service-overview.json"),
-		grafanaCorrelationCheck(root),
-		commandCheck("docker", "docker CLI available"),
-		commandCheck("git", "git CLI available"),
+	isNoDocker := false
+	if data, err := os.ReadFile(filepath.Join(root, "extent.yaml")); err == nil {
+		isNoDocker = strings.Contains(string(data), "no-docker")
+	}
+	var checks []Check
+	if isNoDocker {
+		checks = []Check{
+			fileCheck(root, "extent.yaml"),
+			fileCheck(root, ".env.observability"),
+			commandCheck("git", "git CLI available"),
+		}
+	} else {
+		checks = []Check{
+			fileCheck(root, "docker-compose.observability.yml"),
+			fileCheck(root, "otel-collector.yml"),
+			fileCheck(root, "tempo.yml"),
+			fileCheck(root, "loki.yml"),
+			fileCheck(root, "prometheus.yml"),
+			fileCheck(root, "prometheus-alerts.yml"),
+			fileCheck(root, "extent.yaml"),
+			fileCheck(root, ".env.observability"),
+			fileCheck(root, "grafana/provisioning/datasources/datasources.yml"),
+			fileCheck(root, "grafana/dashboards/service-overview.json"),
+			grafanaCorrelationCheck(root),
+			commandCheck("docker", "docker CLI available"),
+			commandCheck("git", "git CLI available"),
+		}
 	}
 	if config.GrafanaURL != "" {
 		checks = append(checks, grafanaAPICorrelationCheck(config.GrafanaURL))

@@ -6,6 +6,9 @@ support:
 detect:
   files:
     - "*.csproj"
+    - "*.sln"
+    - "*.slnx"
+    - "*.slnf"
   dependencies:
     - HotChocolate
 entrypoint:

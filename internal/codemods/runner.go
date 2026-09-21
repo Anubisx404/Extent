@@ -33,7 +33,7 @@ func PlanCommands(root string) []Command {
 	if exists(filepath.Join(root, "requirements.txt")) || exists(filepath.Join(root, "pyproject.toml")) {
 		commands = append(commands, Command{"python", []string{"python", filepath.Join("extent.codemods", "python", "deep_instrument.py"), root}})
 	}
-	if len(glob(root, "*.csproj")) > 0 {
+	if len(glob(root, "*.csproj")) > 0 || len(glob(root, "*.sln")) > 0 || len(glob(root, "*.slnx")) > 0 || len(glob(root, "*.slnf")) > 0 {
 		commands = append(commands, Command{"dotnet", []string{"dotnet", "run", "--project", filepath.Join("extent.codemods", "dotnet", "Extent.Codemods.csproj"), "--", root}})
 	}
 	if exists(filepath.Join(root, "pom.xml")) || exists(filepath.Join(root, "build.gradle")) || exists(filepath.Join(root, "build.gradle.kts")) {

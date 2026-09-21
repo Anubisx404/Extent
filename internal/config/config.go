@@ -146,7 +146,7 @@ func (c Config) Validate() error {
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
-	allowed := map[string]bool{"minimal": true, "full": true, "high-cardinality-safe": true, "low-resource": true, "report-heavy": true}
+	allowed := map[string]bool{"minimal": true, "full": true, "high-cardinality-safe": true, "low-resource": true, "report-heavy": true, "no-docker": true}
 	if strings.TrimSpace(c.Profile.Name) == "" || !allowed[strings.TrimSpace(c.Profile.Name)] {
 		return fmt.Errorf("unsupported or missing profile.name")
 	}

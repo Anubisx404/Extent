@@ -94,9 +94,11 @@ func Scan(root string) (Result, error) {
 		case base == "uv.lock":
 			packageManagers["uv"] = true
 			result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: rel, Value: "uv"})
-		case strings.HasSuffix(base, ".csproj"):
+		case strings.HasSuffix(base, ".csproj") || strings.HasSuffix(base, ".sln") || strings.HasSuffix(base, ".slnx") || strings.HasSuffix(base, ".slnf"):
 			runtimes["dotnet"] = true
+			packageManagers["dotnet"] = true
 			result.Signals = append(result.Signals, Signal{Kind: "runtime", Path: rel, Value: "dotnet"})
+			result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: rel, Value: "dotnet"})
 			addTextFrameworkSignals(path, rel, frameworks, databaseLibraries, &result)
 		case base == "packages.lock.json":
 			packageManagers["nuget"] = true
@@ -115,6 +117,12 @@ func Scan(root string) (Result, error) {
 			result.Signals = append(result.Signals, Signal{Kind: "docker-compose", Path: rel})
 		case isLikelyEntrypoint(base):
 			result.Entrypoints = append(result.Entrypoints, rel)
+		case strings.HasPrefix(base, "appsettings") && strings.HasSuffix(base, ".json"):
+			addAppSettingsSignals(path, rel, frameworks, databaseLibraries, &result)
+		case strings.HasSuffix(base, ".http"):
+			addHttpFileSignals(path, rel, &result)
+		case base == "launchsettings.json":
+			addLaunchSettingsSignals(path, rel, &result)
 		}
 		return nil
 	})
@@ -156,7 +164,7 @@ func isComposeFile(name string) bool {
 }
 
 func isLikelyEntrypoint(name string) bool {
-	switch name {
+	switch strings.ToLower(name) {
 	case "main.go", "main.py", "app.py", "server.js", "server.ts", "index.js", "index.ts", "program.cs":
 		return true
 	default:
@@ -263,6 +271,124 @@ func addTextFrameworkSignals(path, rel string, frameworks, databaseLibraries map
 		if strings.Contains(text, needle) {
 			databaseLibraries[database] = true
 			result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: database})
+		}
+	}
+}
+
+func addAppSettingsSignals(path, rel string, frameworks, databaseLibraries map[string]bool, result *Result) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	result.Signals = append(result.Signals, Signal{Kind: "appsettings", Path: rel})
+
+	if connStrings, ok := raw["ConnectionStrings"].(map[string]any); ok {
+		for key, val := range connStrings {
+			result.Signals = append(result.Signals, Signal{Kind: "connection-string", Path: rel, Value: key})
+			str, ok := val.(string)
+			if !ok {
+				continue
+			}
+			lower := strings.ToLower(str)
+			if strings.Contains(lower, "postgres") || strings.Contains(lower, "5432") || strings.Contains(lower, "npgsql") {
+				databaseLibraries["postgres"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "postgres"})
+			}
+			if strings.Contains(lower, "sqlserver") || strings.Contains(lower, "1433") || strings.Contains(lower, "trusted_connection") || strings.Contains(lower, "initial catalog") || strings.Contains(lower, "sqlexpress") {
+				databaseLibraries["sqlserver"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "sqlserver"})
+			}
+			if strings.Contains(lower, "mysql") || strings.Contains(lower, "3306") {
+				databaseLibraries["mysql"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "mysql"})
+			}
+			if strings.Contains(lower, "mongodb") || strings.Contains(lower, "27017") {
+				databaseLibraries["mongodb"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "mongodb"})
+			}
+			if strings.Contains(lower, "redis") || strings.Contains(lower, "6379") {
+				databaseLibraries["redis"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "redis"})
+			}
+			if strings.Contains(lower, ".db") || strings.Contains(lower, "sqlite") || strings.Contains(lower, "data source=") {
+				databaseLibraries["sqlite"] = true
+				result.Signals = append(result.Signals, Signal{Kind: "database", Path: rel, Value: "sqlite"})
+			}
+		}
+	}
+
+	if _, ok := raw["OpenTelemetry"]; ok {
+		result.Signals = append(result.Signals, Signal{Kind: "otel-config", Path: rel, Value: "OpenTelemetry"})
+	}
+
+	if urls, ok := raw["Urls"].(string); ok && urls != "" {
+		for _, u := range strings.Split(urls, ";") {
+			trimmed := strings.TrimSpace(u)
+			if trimmed != "" {
+				result.Signals = append(result.Signals, Signal{Kind: "app-url", Path: rel, Value: trimmed})
+			}
+		}
+	}
+}
+
+func addHttpFileSignals(path, rel string, result *Result) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	result.Signals = append(result.Signals, Signal{Kind: "http-file", Path: rel})
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "@") && strings.Contains(trimmed, "=") {
+			parts := strings.SplitN(trimmed, "=", 2)
+			val := strings.TrimSpace(parts[1])
+			if strings.HasPrefix(val, "http://") || strings.HasPrefix(val, "https://") {
+				result.Signals = append(result.Signals, Signal{Kind: "http-host", Path: rel, Value: val})
+			}
+			continue
+		}
+		for _, method := range []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"} {
+			if strings.HasPrefix(trimmed, method+" ") {
+				tokens := strings.Fields(trimmed)
+				if len(tokens) >= 2 {
+					result.Signals = append(result.Signals, Signal{Kind: "http-endpoint", Path: rel, Value: method + " " + tokens[1]})
+				}
+				break
+			}
+		}
+	}
+}
+
+func addLaunchSettingsSignals(path, rel string, result *Result) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var raw struct {
+		Profiles map[string]struct {
+			ApplicationURL string `json:"applicationUrl"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	result.Signals = append(result.Signals, Signal{Kind: "launchsettings", Path: rel})
+	for _, p := range raw.Profiles {
+		if p.ApplicationURL != "" {
+			for _, u := range strings.Split(p.ApplicationURL, ";") {
+				trimmed := strings.TrimSpace(u)
+				if trimmed != "" {
+					result.Signals = append(result.Signals, Signal{Kind: "dev-url", Path: rel, Value: trimmed})
+				}
+			}
 		}
 	}
 }

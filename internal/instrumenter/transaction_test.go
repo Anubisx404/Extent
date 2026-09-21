@@ -269,6 +269,54 @@ func TestUnsupportedZeroCodeAndDeepExecutionFailBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestDotnetTransactionAndUndoRestoresEverything(t *testing.T) {
+	root := t.TempDir()
+	originalCsproj := []byte(`<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+</Project>`)
+	originalProgram := []byte(`var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.Run();
+`)
+	mustWrite(t, filepath.Join(root, "Service.csproj"), string(originalCsproj))
+	mustWrite(t, filepath.Join(root, "Program.cs"), string(originalProgram))
+
+	preview, err := Instrument(root, Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.ChangedFiles) == 0 || preview.Diff == "" {
+		t.Fatal("expected dry run preview diff")
+	}
+	assertExactFile(t, filepath.Join(root, "Service.csproj"), originalCsproj)
+	assertExactFile(t, filepath.Join(root, "Program.cs"), originalProgram)
+
+	result, err := Instrument(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ChangedFiles) != 3 {
+		t.Fatalf("expected 3 changed files, got %#v", result.ChangedFiles)
+	}
+
+	extFile := filepath.Join(root, "ExtentObservabilityExtensions.cs")
+	if !exists(extFile) {
+		t.Fatal("expected ExtentObservabilityExtensions.cs to exist")
+	}
+
+	_, err = Instrument(root, Options{Undo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertExactFile(t, filepath.Join(root, "Service.csproj"), originalCsproj)
+	assertExactFile(t, filepath.Join(root, "Program.cs"), originalProgram)
+	if exists(extFile) {
+		t.Fatal("expected ExtentObservabilityExtensions.cs to be removed on undo")
+	}
+}
+
 func assertExactFile(t *testing.T, path string, want []byte) {
 	t.Helper()
 	got, err := os.ReadFile(path)

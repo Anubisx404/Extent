@@ -21,7 +21,14 @@ func selectCommand(managers []string) ([]string, error) {
 		set[m] = true
 	}
 	var c []string
-	for _, x := range [][]string{{"pnpm", "install"}, {"yarn", "install"}, {"npm", "install"}, {"python", "-m", "pip", "install", "-r", "requirements.txt"}, {"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"}} {
+	for _, x := range [][]string{
+		{"pnpm", "install"},
+		{"yarn", "install"},
+		{"npm", "install"},
+		{"python", "-m", "pip", "install", "-r", "requirements.txt"},
+		{"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"},
+		{"dotnet", "restore"},
+	} {
 		key := x[0]
 		if key == "python" {
 			key = "pip"
@@ -29,7 +36,7 @@ func selectCommand(managers []string) ([]string, error) {
 		if key == "go" {
 			key = "go-modules"
 		}
-		if set[key] {
+		if set[key] || (key == "dotnet" && set["nuget"]) {
 			if c != nil {
 				return nil, errors.New("ambiguous dependency managers")
 			}

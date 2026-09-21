@@ -230,7 +230,7 @@ func runApply(args []string) error {
 		return err
 	}
 	if *profile != "" {
-		if err := validateEnum("profile", *profile, []string{"minimal", "full", "high-cardinality-safe", "low-resource", "report-heavy"}); err != nil {
+		if err := validateEnum("profile", *profile, []string{"minimal", "full", "high-cardinality-safe", "low-resource", "report-heavy", "no-docker"}); err != nil {
 			return err
 		}
 	}

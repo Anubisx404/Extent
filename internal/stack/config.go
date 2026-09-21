@@ -22,7 +22,7 @@ type ProfileConfig struct {
 
 func ResolveProfile(name string) (ProfileConfig, error) {
 	switch name {
-	case "", "core", "core-persistent", "full", "report-heavy", "low-resource", "minimal", "high-cardinality-safe":
+	case "", "core", "core-persistent", "full", "report-heavy", "low-resource", "minimal", "high-cardinality-safe", "no-docker":
 		p := ProfileCorePersistent
 		if name == "core" {
 			p = ProfileCore
