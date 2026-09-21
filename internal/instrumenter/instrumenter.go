@@ -1227,18 +1227,9 @@ func injectDotnetStartupCs(data []byte) ([]byte, error) {
 	configExpr := "Configuration"
 	if strings.Contains(content, "_configuration") && !strings.Contains(content, "Configuration") {
 		configExpr = "_configuration"
-	} else if !strings.Contains(content, "Configuration") && !strings.Contains(content, "configuration") {
-		configExpr = ""
 	}
 
-	arg := configExpr
-	if arg != "" {
-		arg = "(" + arg + ")"
-	} else {
-		arg = "()"
-	}
-
-	injection := indent + servicesVar + ".AddExtentObservability" + arg + ";"
+	injection := indent + servicesVar + ".AddExtentObservability(" + configExpr + ");"
 	newLines := make([]string, 0, len(lines)+1)
 	newLines = append(newLines, lines[:insertIdx]...)
 	newLines = append(newLines, injection)
@@ -1411,16 +1402,16 @@ namespace Microsoft.Extensions.DependencyInjection
 {
     public static class ExtentObservabilityExtensions
     {
-        public static IServiceCollection AddExtentObservability(this IServiceCollection services, IConfiguration configuration = null)
+        public static IServiceCollection AddExtentObservability(this IServiceCollection services, IConfiguration configuration)
         {
             var serviceName = Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME")
-                ?? configuration?["OTEL_SERVICE_NAME"]
+                ?? configuration["OTEL_SERVICE_NAME"]
                 ?? "dotnet-service";
             var serviceNamespace = Environment.GetEnvironmentVariable("OTEL_SERVICE_NAMESPACE")
-                ?? configuration?["OTEL_SERVICE_NAMESPACE"]
+                ?? configuration["OTEL_SERVICE_NAMESPACE"]
                 ?? "default";
             string otlpEndpoint = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")
-                ?? configuration?["OTEL_EXPORTER_OTLP_ENDPOINT"]
+                ?? configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]
                 ?? "http://localhost:4318";
 
             services.AddOpenTelemetry()

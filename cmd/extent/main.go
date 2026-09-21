@@ -452,7 +452,7 @@ func runInstrument(args []string) error {
 	if *jsonOut {
 		return writeJSON(result)
 	}
-	if len(result.ChangedFiles) == 0 {
+	if len(result.ChangedFiles) == 0 && len(result.Messages) == 0 {
 		fmt.Println("no instrumentation changes needed")
 		return nil
 	}
@@ -462,13 +462,15 @@ func runInstrument(args []string) error {
 	for _, message := range result.Messages {
 		fmt.Println(message)
 	}
-	if preview && !*undo {
-		fmt.Println("planned instrumentation files:")
-	} else {
-		fmt.Println("instrumented files:")
-	}
-	for _, path := range result.ChangedFiles {
-		fmt.Println("-", path)
+	if len(result.ChangedFiles) > 0 {
+		if preview && !*undo {
+			fmt.Println("planned instrumentation files:")
+		} else {
+			fmt.Println("instrumented files:")
+		}
+		for _, path := range result.ChangedFiles {
+			fmt.Println("-", path)
+		}
 	}
 	return nil
 }

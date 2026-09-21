@@ -39,22 +39,28 @@ flowchart TD
     end
 
     subgraph Generation ["2. Provisioning & Instrumentation"]
-        D --> E["extent apply<br/>(extent.yaml & LGTM Configs)"]
+        E["extent apply<br/>(extent.yaml & LGTM Configs)"]
         E --> F["extent instrument<br/>(OTel Bootstrap Injection)"]
         F --> G["extent deps<br/>(SDK Dependency Sync)"]
     end
 
     subgraph Runtime ["3. Stack & Verification"]
-        G --> H["extent stack up<br/>(Docker Compose LGTM Stack)"]
+        H["extent stack up<br/>(Docker Compose LGTM Stack)"]
         H --> I["extent verify / doctor<br/>(Config & Endpoint Checks)"]
         I --> J["extent smoke<br/>(Synthetic Traffic & Correlation)"]
     end
 
     subgraph Governance ["4. Analysis & Quality"]
-        J --> K["extent cardinality<br/>(Loki Label Risk Score)"]
-        J --> L["extent score<br/>(Telemetry Quality Rating)"]
-        J --> M["extent report / baseline<br/>(Prometheus Bottlenecks & Diff)"]
+        K["extent cardinality<br/>(Loki Label Risk Score)"]
+        L["extent score<br/>(Telemetry Quality Rating)"]
+        M["extent report / baseline<br/>(Prometheus Bottlenecks & Diff)"]
     end
+
+    D --> E
+    G --> H
+    J --> K
+    J --> L
+    J --> M
 ```
 
 Extent treats OpenTelemetry APIs, SDKs, semantic attributes, resources,
@@ -320,21 +326,26 @@ The generated stack contains:
 
 ```mermaid
 flowchart LR
-    APP["Target App<br/>(OTel Traces / Metrics / Logs)"] -->|OTLP gRPC:4317 / HTTP:4318| OTCP["otel-collector.yml<br/>(OTel Collector)"]
+    APP["Target App<br/>(OTel Traces / Metrics / Logs)"] -->|"OTLP gRPC:4317 / HTTP:4318"| OTCP["otel-collector.yml<br/>(OTel Collector)"]
 
     subgraph LGTM ["Local LGTM Stack (docker-compose.observability.yml)"]
-        OTCP -->|Remote Write :9090| PROM["prometheus.yml<br/>(Prometheus Metrics)"]
-        OTCP -->|OTLP Exporter :3200| TEMPO["tempo.yml<br/>(Tempo Traces)"]
-        OTCP -->|Loki Push API :3100| LOKI["loki.yml<br/>(Loki Logs)"]
+        PROM["prometheus.yml<br/>(Prometheus Metrics)"]
+        TEMPO["tempo.yml<br/>(Tempo Traces)"]
+        LOKI["loki.yml<br/>(Loki Logs)"]
+        GRAF["grafana/<br/>(Dashboards & Datasources)"]
 
-        PROM --> GRAF["grafana/<br/>(Dashboards & Datasources)"]
+        PROM --> GRAF
         TEMPO --> GRAF
         LOKI --> GRAF
     end
 
-    CLI_VERIFY["extent smoke / verify / report"] -.->|Query API| PROM
-    CLI_VERIFY -.->|Query API| TEMPO
-    CLI_VERIFY -.->|Query API| LOKI
+    OTCP -->|"Remote Write :9090"| PROM
+    OTCP -->|"OTLP Exporter :3200"| TEMPO
+    OTCP -->|"Loki Push API :3100"| LOKI
+
+    CLI_VERIFY["extent smoke / verify / report"] -.->|"Query API"| PROM
+    CLI_VERIFY -.->|"Query API"| TEMPO
+    CLI_VERIFY -.->|"Query API"| LOKI
 ```
 
 ## Architecture
@@ -407,23 +418,30 @@ flowchart TD
         BACKENDS["Prometheus / Tempo / Loki / Grafana"]
     end
 
-    CLI --> AnalysisLayer
-    CLI --> MutationLayer
-    CLI --> ProvisioningLayer
-    CLI --> VerificationLayer
+    CLI --> SCAN
+    CLI --> INST
+    CLI --> TEMPL
+    CLI --> VERIFY
 
-    AnalysisLayer --> PLANNER
+    SCAN --> ANALYZER
+    ANALYZER --> PLANNER
     PLANNER --> CONTRACT
-    CONTRACT --> TEMPL
+    CONTRACT --> CONF
+    CONF --> TEMPL
 
-    MutationLayer --> TARGET_CODE
-    ProvisioningLayer --> COMPOSE
+    INST --> TARGET_CODE
+    DEPS --> TARGET_CODE
+    CODEMOD --> TARGET_CODE
+
+    TEMPL --> COMPOSE
+    STACK --> COMPOSE
     COMPOSE --> COLLECTOR
-    COMPOSE --> BACKENDS
+    COLLECTOR --> BACKENDS
 
-    VerificationLayer --> TARGET_CODE
-    VerificationLayer --> COLLECTOR
-    VerificationLayer --> BACKENDS
+    VERIFY --> TARGET_CODE
+    SMOKE --> COLLECTOR
+    EVID --> BACKENDS
+    REPORT --> BACKENDS
 ```
 
 ## Documentation & Governance
