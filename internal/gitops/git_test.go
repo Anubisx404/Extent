@@ -25,7 +25,7 @@ func (runner *scriptedRunner) Run(_ context.Context, name string, args ...string
 
 func TestEnsureBranchContextValidatesAndCreatesBranch(t *testing.T) {
 	runner := &scriptedRunner{results: map[string]process.Result{
-		"git rev-parse --verify refs/heads/v1": {ExitCode: 1, Err: errors.New("missing")},
+		"git rev-parse --verify --quiet refs/heads/v1": {ExitCode: 1, Err: errors.New("missing")},
 	}}
 	if err := EnsureBranchContext(context.Background(), runner, t.TempDir(), "v1"); err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestEnsureBranchContextValidatesAndCreatesBranch(t *testing.T) {
 		"git rev-parse --is-inside-work-tree",
 		"git check-ref-format --branch v1",
 		"git status --porcelain",
-		"git rev-parse --verify refs/heads/v1",
+		"git rev-parse --verify --quiet refs/heads/v1",
 		"git checkout -b v1",
 	} {
 		if !strings.Contains(calls, expected) {
@@ -79,7 +79,7 @@ func TestEnsureBranchContextChecksOutExistingBranch(t *testing.T) {
 
 func TestEnsureBranchContextDoesNotTreatLookupFailureAsMissingBranch(t *testing.T) {
 	runner := &scriptedRunner{results: map[string]process.Result{
-		"git rev-parse --verify refs/heads/v1": {ExitCode: -1, Err: context.DeadlineExceeded, TimedOut: true},
+		"git rev-parse --verify --quiet refs/heads/v1": {ExitCode: -1, Err: context.DeadlineExceeded, TimedOut: true},
 	}}
 	if err := EnsureBranchContext(context.Background(), runner, t.TempDir(), "v1"); err == nil {
 		t.Fatal("branch lookup failure was ignored")

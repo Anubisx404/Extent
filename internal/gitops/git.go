@@ -52,7 +52,7 @@ func HasUncommittedChangesContext(ctx context.Context, r Runner, root string) (b
 	return strings.TrimSpace(res.Stdout) != "", nil
 }
 func branchExists(ctx context.Context, r Runner, root, branch string) (bool, error) {
-	result := r.Run(ctx, "git", "rev-parse", "--verify", "refs/heads/"+branch)
+	result := r.Run(ctx, "git", "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
 	if result.Err == nil {
 		return true, nil
 	}
