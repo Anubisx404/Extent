@@ -169,3 +169,21 @@ func TestStackContextRejectsSymlinkedComposeFile(t *testing.T) {
 		t.Fatalf("ran Docker for unsafe compose file: %#v", runner.calls)
 	}
 }
+
+func TestProjectNameUsesDirectoryNameForRelativeRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Checkout-API")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	if got := projectName("."); got != "extent-checkout-api" {
+		t.Fatalf("projectName(\".\") = %q, want %q", got, "extent-checkout-api")
+	}
+}

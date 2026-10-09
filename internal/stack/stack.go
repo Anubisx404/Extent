@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -69,20 +70,18 @@ func UpWithOptions(ctx context.Context, r Runner, root string, opts UpOptions) e
 	} else if !validProjectName.MatchString(opts.ProjectName) {
 		return fmt.Errorf("invalid Compose project name %q", opts.ProjectName)
 	}
-	args := []string{"compose", "-f", composeFile}
-	args = append(args, "-p", opts.ProjectName)
-	args = append(args, "config", "--quiet")
-	if res := r.Run(ctx, "docker", args...); res.Err != nil {
+	base := composeArgs(root, opts.ProjectName)
+	configArgs := append(append([]string{}, base...), "config", "--quiet")
+	if res := r.Run(ctx, "docker", configArgs...); res.Err != nil {
 		return processFailure("compose config invalid", res)
 	}
-	args = args[:len(args)-2]
-	statusArgs := append(append([]string{}, args...), "ps", "--format", "json")
+	statusArgs := append(append([]string{}, base...), "ps", "--format", "json")
 	if status := r.Run(ctx, "docker", statusArgs...); status.Err != nil || strings.TrimSpace(status.Stdout) == "" || strings.TrimSpace(status.Stdout) == "[]" {
 		if err := checkPortConflicts(root); err != nil {
 			return err
 		}
 	}
-	args = append(args, "up", "-d", "--force-recreate")
+	args := append(append([]string{}, base...), "up", "-d", "--force-recreate")
 	if opts.Wait {
 		args = append(args, "--wait", "--wait-timeout", fmt.Sprint(int(opts.Timeout.Seconds())))
 	}
@@ -90,6 +89,15 @@ func UpWithOptions(ctx context.Context, r Runner, root string, opts UpOptions) e
 	defer cancel()
 	if res := r.Run(c, "docker", args...); res.Err != nil {
 		return processFailure("docker compose failed", res)
+	}
+	if opts.Wait {
+		// --wait only covers services with healthchecks. Loki and Tempo have none
+		// (their images have no shell or wget), so wait for their /ready endpoints.
+		readyCtx, cancelReady := context.WithTimeout(ctx, opts.Timeout)
+		defer cancelReady()
+		if err := waitForReady(readyCtx, readinessProbe); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -108,7 +116,7 @@ func InspectContext(ctx context.Context, r Runner, root string) (StatusReport, e
 		return StatusReport{}, err
 	}
 	project := projectName(root)
-	args := []string{"compose", "-f", composeFile, "-p", project, "ps", "--format", "json"}
+	args := append(composeArgs(root, project), "ps", "--format", "json")
 	result := r.Run(ctx, "docker", args...)
 	if result.Err != nil {
 		return StatusReport{}, processFailure("docker compose status failed", result)
@@ -145,6 +153,49 @@ func parseStatus(raw string) ([]ComponentStatus, error) {
 }
 func dockerCompose(ctx context.Context, r Runner, root string, args ...string) error {
 	return composeWithPreflight(ctx, r, root, args...)
+}
+
+// readinessEndpoints are the loopback /ready URLs for components without a Compose healthcheck.
+var readinessEndpoints = []struct{ name, url string }{
+	{"Loki", "http://127.0.0.1:3100/ready"},
+	{"Tempo", "http://127.0.0.1:3200/ready"},
+}
+
+// readinessProbe reports whether one /ready URL answers 200. Tests replace it.
+var readinessProbe = func(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// waitForReady polls each readiness endpoint until it answers 200 or ctx ends.
+func waitForReady(ctx context.Context, probe func(context.Context, string) error) error {
+	for _, endpoint := range readinessEndpoints {
+		for {
+			err := probe(ctx, endpoint.url)
+			if err == nil {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("%s did not become ready: %v", endpoint.name, err)
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+	return nil
 }
 
 func checkPortConflicts(root string) error {
@@ -198,7 +249,7 @@ func preflight(ctx context.Context, r Runner, root string) error {
 		return errors.New("docker executable unavailable")
 	}
 	if e := r.Run(ctx, "docker", "compose", "version").Err; e != nil {
-		return errors.New("docker compose unavailable")
+		return errors.New("docker compose v2 is unavailable; Extent requires Docker Compose v2 (Podman and nerdctl are not supported)")
 	}
 	if e := r.Run(ctx, "docker", "info", "--format", "{{json .ServerVersion}}").Err; e != nil {
 		return errors.New("docker daemon unavailable")
@@ -209,7 +260,7 @@ func composeWithPreflight(ctx context.Context, r Runner, root string, args ...st
 	if err := preflight(ctx, r, root); err != nil {
 		return err
 	}
-	a := append([]string{"compose", "-f", composeFile, "-p", projectName(root)}, args...)
+	a := append(composeArgs(root, projectName(root)), args...)
 	res := r.Run(ctx, "docker", a...)
 	if res.Err != nil {
 		return processFailure("docker compose failed", res)
@@ -234,6 +285,9 @@ var (
 )
 
 func projectName(root string) string {
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
 	name := strings.ToLower(filepath.Base(filepath.Clean(root)))
 	name = invalidProjectRun.ReplaceAllString(name, "-")
 	name = strings.Trim(name, "-_")
