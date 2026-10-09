@@ -142,3 +142,87 @@ func assertContains(t *testing.T, values []string, want string) {
 	}
 	t.Fatalf("expected %q in %#v", want, values)
 }
+
+func TestScanDetectsGoNetHTTPWithoutRouterFramework(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module example.com/shop\n\ngo 1.22\n")
+	mustWrite(t, filepath.Join(root, "main.go"), `package main
+
+import (
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {})
+	_ = http.ListenAndServe(":8080", nil)
+}
+`)
+
+	result, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, result.Frameworks, "nethttp")
+	assertContains(t, result.Entrypoints, "main.go")
+}
+
+func TestScanNetHTTPIgnoresTestOnlyUsageAndYieldsToRouters(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module example.com/shop\n\ngo 1.22\n\nrequire github.com/go-chi/chi/v5 v5.0.0\n")
+	mustWrite(t, filepath.Join(root, "handler_test.go"), `package main
+
+import "net/http"
+
+func helper() { _ = http.HandleFunc }
+`)
+	mustWrite(t, filepath.Join(root, "main.go"), `package main
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+)
+
+func main() {
+	r := chi.NewRouter()
+	http.Handle("/", r)
+}
+`)
+
+	result, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, result.Frameworks, "chi")
+	for _, f := range result.Frameworks {
+		if f == "nethttp" {
+			t.Fatalf("nethttp should not be reported alongside chi: %#v", result.Frameworks)
+		}
+	}
+}
+
+func TestScanNetHTTPSkipsTestOnlyFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "go.mod"), "module example.com/shop\n\ngo 1.22\n")
+	mustWrite(t, filepath.Join(root, "server_test.go"), `package main
+
+import (
+	"net/http"
+	"testing"
+)
+
+func TestHealth(t *testing.T) {
+	http.HandleFunc("/health", nil)
+}
+`)
+
+	result, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range result.Frameworks {
+		if f == "nethttp" {
+			t.Fatalf("test-only usage detected as nethttp: %#v", result.Frameworks)
+		}
+	}
+}

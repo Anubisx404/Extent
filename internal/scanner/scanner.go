@@ -44,6 +44,7 @@ func Scan(root string) (Result, error) {
 	packageManagers := map[string]bool{}
 	databaseLibraries := map[string]bool{}
 
+	var goNetHTTPPath string
 	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -57,6 +58,11 @@ func Scan(root string) (Result, error) {
 
 		rel := relPath(absRoot, path)
 		base := strings.ToLower(d.Name())
+		if strings.HasSuffix(base, ".go") && !strings.HasSuffix(base, "_test.go") && goNetHTTPPath == "" {
+			if isGoNetHTTPSource(path) {
+				goNetHTTPPath = rel
+			}
+		}
 		switch {
 		case base == "package.json":
 			runtimes["node"] = true
@@ -130,6 +136,13 @@ func Scan(root string) (Result, error) {
 		return Result{}, err
 	}
 
+	// Plain net/http apps have no framework manifest entry; report them as the
+	// "nethttp" recipe unless a Go router framework already explains the code.
+	if goNetHTTPPath != "" && !frameworks["gin"] && !frameworks["fiber"] && !frameworks["chi"] {
+		frameworks["nethttp"] = true
+		result.Signals = append(result.Signals, Signal{Kind: "framework", Path: goNetHTTPPath, Value: "nethttp"})
+	}
+
 	result.Runtimes = keys(runtimes)
 	result.Frameworks = keys(frameworks)
 	result.PackageManagers = keys(packageManagers)
@@ -156,6 +169,25 @@ func IsExcludedDir(name string) bool {
 	return false
 }
 
+// isGoNetHTTPSource reports whether a non-test Go file imports net/http and
+// registers or serves HTTP handlers with it.
+func isGoNetHTTPSource(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := string(data)
+	if !strings.Contains(text, `"net/http"`) {
+		return false
+	}
+	for _, needle := range []string{"http.HandleFunc(", "http.Handle(", "ListenAndServe("} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func isComposeFile(name string) bool {
 	return name == "docker-compose.yml" ||
 		name == "docker-compose.yaml" ||
@@ -170,6 +202,43 @@ func isLikelyEntrypoint(name string) bool {
 	default:
 		return false
 	}
+}
+
+// nodeFrameworkDependencies maps a package.json dependency to the framework it
+// signals.
+var nodeFrameworkDependencies = map[string]string{
+	"express":       "express",
+	"@nestjs/core":  "nestjs",
+	"next":          "nextjs",
+	"fastify":       "fastify",
+	"svelte":        "svelte",
+	"@sveltejs/kit": "sveltekit",
+}
+
+// textFrameworkNeedles maps a lowercased text needle found in a manifest or
+// source file to the framework it signals.
+var textFrameworkNeedles = map[string]string{
+	"fastapi":                  "fastapi",
+	"django":                   "django",
+	"flask":                    "flask",
+	"microsoft.aspnetcore":     "aspnetcore",
+	"spring-boot":              "springboot",
+	"github.com/gin-gonic/gin": "gin",
+	"github.com/gofiber/fiber": "fiber",
+	"github.com/go-chi/chi":    "chi",
+}
+
+// DetectableFrameworks returns every framework name the scanner can emit,
+// sorted. "nethttp" is emitted for plain Go net/http programs.
+func DetectableFrameworks() []string {
+	seen := map[string]bool{"nethttp": true}
+	for _, framework := range nodeFrameworkDependencies {
+		seen[framework] = true
+	}
+	for _, framework := range textFrameworkNeedles {
+		seen[framework] = true
+	}
+	return keys(seen)
 }
 
 func addPackageSignals(path, rel string, frameworks, databaseLibraries map[string]bool, result *Result) error {
@@ -191,15 +260,7 @@ func addPackageSignals(path, rel string, frameworks, databaseLibraries map[strin
 	for k, v := range pkg.DevDependencies {
 		deps[k] = v
 	}
-	depFrameworks := map[string]string{
-		"express":       "express",
-		"@nestjs/core":  "nestjs",
-		"next":          "nextjs",
-		"fastify":       "fastify",
-		"svelte":        "svelte",
-		"@sveltejs/kit": "sveltekit",
-	}
-	for dep, framework := range depFrameworks {
+	for dep, framework := range nodeFrameworkDependencies {
 		if _, ok := deps[dep]; ok {
 			frameworks[framework] = true
 			result.Signals = append(result.Signals, Signal{Kind: "framework", Path: rel, Value: framework})
@@ -233,17 +294,7 @@ func addTextFrameworkSignals(path, rel string, frameworks, databaseLibraries map
 		return
 	}
 	text := strings.ToLower(string(data))
-	candidates := map[string]string{
-		"fastapi":                  "fastapi",
-		"django":                   "django",
-		"flask":                    "flask",
-		"microsoft.aspnetcore":     "aspnetcore",
-		"spring-boot":              "springboot",
-		"github.com/gin-gonic/gin": "gin",
-		"github.com/gofiber/fiber": "fiber",
-		"github.com/go-chi/chi":    "chi",
-	}
-	for needle, framework := range candidates {
+	for needle, framework := range textFrameworkNeedles {
 		if strings.Contains(text, needle) {
 			frameworks[framework] = true
 			result.Signals = append(result.Signals, Signal{Kind: "framework", Path: rel, Value: framework})
