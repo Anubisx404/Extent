@@ -3,6 +3,7 @@ package verifier
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Anubisx404/Extent/internal/observability"
 	"github.com/Anubisx404/Extent/internal/smoke"
+	"github.com/Anubisx404/Extent/internal/stack"
 )
 
 type Config struct {
@@ -24,6 +26,13 @@ type Config struct {
 	GrafanaURL    string
 	ServiceName   string
 	Requests      int
+	// Grafana credentials. GrafanaToken wins (Bearer); otherwise GrafanaUser and
+	// GrafanaPassword use basic auth. Unset values fall back to the
+	// EXTENT_GRAFANA_* environment variables, then to GRAFANA_ADMIN_USER and
+	// GRAFANA_ADMIN_PASSWORD in the target's .env.observability.
+	GrafanaUser     string
+	GrafanaPassword string
+	GrafanaToken    string
 }
 
 type Report struct {
@@ -75,7 +84,7 @@ func VerifyConfig(config Config) Report {
 		}
 	}
 	if config.GrafanaURL != "" {
-		checks = append(checks, grafanaAPICorrelationCheck(config.GrafanaURL))
+		checks = append(checks, grafanaAPICorrelationCheck(config.GrafanaURL, config))
 	}
 	if config.URL != "" {
 		checks = append(checks, stackChecks(config)...)
@@ -113,21 +122,32 @@ func stackChecks(config Config) []Check {
 		checks = append(checks, Check{Name: evidence.Name, OK: evidence.OK, Detail: detail})
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	checks = append(checks, readyCheck(client, config.LokiURL, "Loki ready"), readyCheck(client, config.TempoURL, "Tempo ready"))
+	// Loki and Tempo can take a minute to finish joining their rings after
+	// start, so both readiness checks share one retry window.
+	deadline := time.Now().Add(readyWindow)
+	checks = append(checks, readyCheck(client, config.LokiURL, "Loki ready", deadline), readyCheck(client, config.TempoURL, "Tempo ready", deadline))
 	return checks
 }
 
-func readyCheck(client *http.Client, baseURL, name string) Check {
+// readyWindow bounds how long verify waits for Loki and Tempo /ready to answer 200.
+const readyWindow = 60 * time.Second
+
+func readyCheck(client *http.Client, baseURL, name string, deadline time.Time) Check {
 	endpoint, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return Check{Name: name, OK: false, Detail: err.Error()}
 	}
 	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
-	_, err = bounded.Do(context.Background(), http.MethodGet, endpoint, "/ready", nil, nil)
-	if err != nil {
-		return Check{Name: name, OK: false, Detail: err.Error()}
+	for {
+		_, err = bounded.Do(context.Background(), http.MethodGet, endpoint, "/ready", nil, nil)
+		if err == nil {
+			return Check{Name: name, OK: true}
+		}
+		if !time.Now().Before(deadline) {
+			return Check{Name: name, OK: false, Detail: err.Error()}
+		}
+		time.Sleep(2 * time.Second)
 	}
-	return Check{Name: name, OK: true}
 }
 
 func fileCheck(root, rel string) Check {
@@ -166,14 +186,50 @@ func grafanaCorrelationCheck(root string) Check {
 	return Check{Name: "Grafana trace/log/metric correlation", OK: true}
 }
 
-func grafanaAPICorrelationCheck(baseURL string) Check {
+// grafanaAuthHeader builds the Authorization header for Grafana API requests.
+// Precedence: config token, config user, EXTENT_GRAFANA_TOKEN, EXTENT_GRAFANA_USER
+// (with EXTENT_GRAFANA_PASSWORD), then the credentials `extent apply` recorded
+// in the project's .env.observability. With none of these the header is left
+// empty and Grafana rejects the request; no default password is ever sent.
+func grafanaAuthHeader(config Config) http.Header {
+	header := http.Header{}
+	if config.GrafanaToken != "" {
+		header.Set("Authorization", "Bearer "+config.GrafanaToken)
+		return header
+	}
+	if token := os.Getenv("EXTENT_GRAFANA_TOKEN"); config.GrafanaUser == "" && token != "" {
+		header.Set("Authorization", "Bearer "+token)
+		return header
+	}
+	user, password := config.GrafanaUser, config.GrafanaPassword
+	if user == "" {
+		user = os.Getenv("EXTENT_GRAFANA_USER")
+		if password == "" {
+			password = os.Getenv("EXTENT_GRAFANA_PASSWORD")
+		}
+	}
+	if user == "" && password == "" {
+		root := config.Root
+		if root == "" {
+			root = "."
+		}
+		user, password = stack.GrafanaCredentials(root)
+	}
+	if password == "" {
+		return header
+	}
+	header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(user+":"+password)))
+	return header
+}
+
+func grafanaAPICorrelationCheck(baseURL string, config Config) Check {
 	endpoint, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
-	resp, err := bounded.Do(context.Background(), http.MethodGet, endpoint, "/api/datasources/uid/tempo", nil, nil)
+	resp, err := bounded.Do(context.Background(), http.MethodGet, endpoint, "/api/datasources/uid/tempo", nil, grafanaAuthHeader(config))
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
