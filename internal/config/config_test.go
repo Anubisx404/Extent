@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,21 @@ func TestParseAcceptsOverrides(t *testing.T) {
 	}
 	if c.Profile.Name != "minimal" || !c.Protocol.GRPC || c.Service.Port != 9090 {
 		t.Fatalf("%+v", c)
+	}
+}
+
+func TestParseVersionHandling(t *testing.T) {
+	// No version field: written by v1.0.x, loads as version 1.
+	c, err := Parse([]byte("service:\n  name: api\n"))
+	if err != nil {
+		t.Fatalf("missing version rejected: %v", err)
+	}
+	if c.Version != ConfigVersion {
+		t.Fatalf("version = %d, want %d", c.Version, ConfigVersion)
+	}
+	// A newer schema fails with an actionable message.
+	_, err = Parse([]byte("version: 2\nservice:\n  name: api\n"))
+	if err == nil || !strings.Contains(err.Error(), "newer Extent") || !strings.Contains(err.Error(), "upgrade Extent") {
+		t.Fatalf("newer version error = %v", err)
 	}
 }

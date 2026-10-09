@@ -72,7 +72,7 @@ type Redaction struct {
 }
 
 func Defaults() Config {
-	return Config{Version: 1, Profile: Profile{Name: "full"}, Protocol: Protocol{HTTP: true}, Service: Service{Name: "service", Namespace: "default", Version: "1.0.0", Environment: "development", Port: 8080}, OTLP: OTLP{Endpoint: "http://localhost:4317", Protocol: "grpc", Insecure: true}, Signals: Signals{Traces: true, Metrics: true, Logs: true}, Instrumentation: Instrumentation{HTTP: true, LogsCorrelation: true}, SLO: SLO{HTTPLatencyP95MS: 300, ErrorRatePercent: 1, AvailabilityPercent: 99.5}, Sampling: Sampling{Local: "always_on", HeavyLoad: "tail_sampling"}, Redaction: Redaction{Headers: []string{"authorization", "cookie"}, DBStatement: "sanitize", RequestBody: "disabled"}}
+	return Config{Version: ConfigVersion, Profile: Profile{Name: "full"}, Protocol: Protocol{HTTP: true}, Service: Service{Name: "service", Namespace: "default", Version: "1.0.0", Environment: "development", Port: 8080}, OTLP: OTLP{Endpoint: "http://localhost:4317", Protocol: "grpc", Insecure: true}, Signals: Signals{Traces: true, Metrics: true, Logs: true}, Instrumentation: Instrumentation{HTTP: true, LogsCorrelation: true}, SLO: SLO{HTTPLatencyP95MS: 300, ErrorRatePercent: 1, AvailabilityPercent: 99.5}, Sampling: Sampling{Local: "always_on", HeavyLoad: "tail_sampling"}, Redaction: Redaction{Headers: []string{"authorization", "cookie"}, DBStatement: "sanitize", RequestBody: "disabled"}}
 }
 
 func Parse(data []byte) (Config, error) {
@@ -142,8 +142,15 @@ func Marshal(c Config) ([]byte, error) {
 	return yaml.Marshal(c)
 }
 
+// ConfigVersion is the extent.yaml schema version this build reads and writes.
+// A file without a version field keeps the default (1), the v1.0.x layout.
+const ConfigVersion = 1
+
 func (c Config) Validate() error {
-	if c.Version != 1 {
+	if c.Version > ConfigVersion {
+		return fmt.Errorf("extent.yaml was written by a newer Extent (config version %d, this build supports up to %d); upgrade Extent", c.Version, ConfigVersion)
+	}
+	if c.Version != ConfigVersion {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
 	allowed := map[string]bool{"minimal": true, "full": true, "high-cardinality-safe": true, "low-resource": true, "report-heavy": true, "no-docker": true}
