@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,21 @@ func TestLoadRecoversInterruptedStateReplacement(t *testing.T) {
 	}
 }
 
+func TestValidateRelativePathPolicy(t *testing.T) {
+	ok := []string{"a", "dir/file.txt", "console.txt", "COM10.txt", "nullable.go"}
+	for _, p := range ok {
+		if err := ValidateRelativePath(p); err != nil {
+			t.Fatalf("ValidateRelativePath(%q) = %v", p, err)
+		}
+	}
+	bad := []string{"", "/etc/passwd", "../x", "a/../../x", "a/../b", "NUL", "nul.txt", "x/Con.y", "COM5", "LPT9.log", `a\..\b`}
+	for _, p := range bad {
+		if err := ValidateRelativePath(p); err == nil {
+			t.Fatalf("ValidateRelativePath(%q) accepted", p)
+		}
+	}
+}
+
 func TestSaveRejectsSymlinkedStateDirectory(t *testing.T) {
 	root := t.TempDir()
 	external := t.TempDir()
@@ -113,5 +129,34 @@ func TestSaveRejectsSymlinkedStateDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(external, "state.json")); !os.IsNotExist(err) {
 		t.Fatal("state was written through symlinked directory")
+	}
+}
+
+func TestLoadTreatsMissingVersionAsV1AndRejectsNewerVersion(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		root := t.TempDir()
+		dir := filepath.Join(root, ".extent")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+
+	root := write(t, `{"operations":[{"id":"op","kind":"instrument","entries":[]}]}`)
+	loaded, err := Load(root)
+	if err != nil {
+		t.Fatalf("missing version rejected: %v", err)
+	}
+	if loaded.Version != CurrentVersion || len(loaded.Operations) != 1 {
+		t.Fatalf("loaded = %#v", loaded)
+	}
+
+	root = write(t, `{"version":2,"operations":[]}`)
+	if _, err := Load(root); err == nil || !strings.Contains(err.Error(), "newer Extent") || !strings.Contains(err.Error(), "upgrade Extent") {
+		t.Fatalf("newer state version error = %v", err)
 	}
 }

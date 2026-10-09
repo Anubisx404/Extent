@@ -5,13 +5,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
 
+// CurrentVersion is the state manifest schema version written by this build.
+// Manifests written by v1.0.x carry no version field; they decode as version 0
+// and are treated as version 1 on load.
 const CurrentVersion = 1
 
 type Entry struct {
@@ -126,6 +131,13 @@ func Load(root string) (Manifest, error) {
 	if err := dec.Decode(&extra); err != io.EOF {
 		return m, fmt.Errorf("invalid state: multiple JSON values")
 	}
+	if m.Version == 0 {
+		// Missing version: written by v1.0.x, which predates the version field.
+		m.Version = CurrentVersion
+	}
+	if m.Version > CurrentVersion {
+		return Manifest{}, fmt.Errorf("this state (%s) was written by a newer Extent (state version %d, this build supports up to %d); upgrade Extent", filepath.Join(directory, "state.json"), m.Version, CurrentVersion)
+	}
 	if err := Validate(m); err != nil {
 		return Manifest{}, err
 	}
@@ -176,6 +188,9 @@ func Validate(m Manifest) error {
 			clean := filepath.Clean(entry.Path)
 			if entry.Path == "" || entry.Path == "." || filepath.IsAbs(entry.Path) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 				return fmt.Errorf("unsafe state path %q", entry.Path)
+			}
+			if err := ValidateRelativePath(entry.Path); err != nil {
+				return fmt.Errorf("unsafe state path %q: %w", entry.Path, err)
 			}
 			if paths[clean] {
 				return fmt.Errorf("duplicate state path %q", clean)
@@ -228,4 +243,58 @@ func stateDirectory(root string, create bool) (string, error) {
 		return "", err
 	}
 	return directory, nil
+}
+
+// ErrUnsafeRelativePath reports a project-relative path that could escape the
+// project root or that cannot be created portably.
+var ErrUnsafeRelativePath = errors.New("unsafe relative path")
+
+var reservedWindowsNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true, "CONIN$": true, "CONOUT$": true,
+}
+
+// ValidateRelativePath enforces the path policy for every project-relative
+// path Extent writes or records: it must be non-empty, relative, free of ".."
+// components, and must not name a Windows reserved device (CON, PRN, AUX, NUL,
+// COM1-9, LPT1-9, with or without an extension) in any component. The reserved
+// names are refused on every OS so a project stays portable. Both "/" and "\\"
+// are treated as separators.
+func ValidateRelativePath(p string) error {
+	if strings.TrimSpace(p) == "" {
+		return fmt.Errorf("%w: empty path", ErrUnsafeRelativePath)
+	}
+	normalized := strings.ReplaceAll(p, `\`, "/")
+	if filepath.IsAbs(p) || strings.HasPrefix(normalized, "/") || filepath.VolumeName(p) != "" {
+		return fmt.Errorf("%w: %q is absolute", ErrUnsafeRelativePath, p)
+	}
+	for _, part := range strings.Split(normalized, "/") {
+		if part == ".." {
+			return fmt.Errorf("%w: %q contains a parent directory component", ErrUnsafeRelativePath, p)
+		}
+	}
+	clean := path.Clean(normalized)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("%w: %q escapes the project root", ErrUnsafeRelativePath, p)
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if isReservedWindowsName(part) {
+			return fmt.Errorf("%w: %q uses reserved Windows name %q", ErrUnsafeRelativePath, p, part)
+		}
+	}
+	return nil
+}
+
+func isReservedWindowsName(component string) bool {
+	base := component
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(strings.TrimRight(base, " "))
+	if reservedWindowsNames[base] {
+		return true
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9' {
+		return true
+	}
+	return false
 }
