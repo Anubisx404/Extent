@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 )
 
 const DefaultBodyLimit int64 = 1 << 20
+
+// ErrBodyLimit is wrapped by Client.Do when a response exceeds BodyLimit.
+var ErrBodyLimit = errors.New("response body exceeds limit")
 
 type Client struct {
 	HTTP      *http.Client
@@ -100,7 +104,7 @@ func (c *Client) Do(ctx context.Context, method string, base *url.URL, path stri
 	defer resp.Body.Close()
 	b, readErr := io.ReadAll(io.LimitReader(resp.Body, c.BodyLimit+1))
 	if int64(len(b)) > c.BodyLimit {
-		return Response{}, &Error{Op: method, URL: safeURL(&u), Status: resp.Status, StatusCode: resp.StatusCode, Err: fmt.Errorf("response body exceeds limit")}
+		return Response{}, &Error{Op: method, URL: safeURL(&u), Status: resp.Status, StatusCode: resp.StatusCode, Err: ErrBodyLimit}
 	}
 	if readErr != nil {
 		return Response{}, &Error{Op: method, URL: safeURL(&u), Status: resp.Status, StatusCode: resp.StatusCode, Err: readErr}
