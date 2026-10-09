@@ -12,6 +12,9 @@ import (
 )
 
 func TestGeneratedProjectTransactions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: runs node, python and go toolchains against generated projects; run without -short")
+	}
 	t.Logf("runtime=%s/%s node=%s python=%s go=%s", runtime.GOOS, runtime.GOARCH, toolVersion("node", "--version"), toolVersion("python", "--version"), toolVersion("go", "version"))
 	verifyNodeGeneratedProject(t)
 	verifyPythonGeneratedProject(t)

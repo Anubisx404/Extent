@@ -1,0 +1,71 @@
+{
+  "_comment": "OpenTelemetry dependency pins used by the instrumenter. Refresh with scripts/bump-otel.sh; keep in sync with the generated bootstrap code.",
+  "node": {
+    "dependencies": {
+      "@opentelemetry/api": "1.9.1",
+      "@opentelemetry/sdk-node": "0.220.0",
+      "@opentelemetry/auto-instrumentations-node": "0.78.0",
+      "@opentelemetry/exporter-trace-otlp-http": "0.220.0",
+      "@opentelemetry/exporter-metrics-otlp-http": "0.220.0",
+      "@opentelemetry/exporter-logs-otlp-http": "0.220.0",
+      "@opentelemetry/sdk-logs": "0.220.0",
+      "@opentelemetry/sdk-metrics": "2.9.0",
+      "@opentelemetry/resources": "2.9.0"
+    },
+    "database": {
+      "@opentelemetry/instrumentation-pg": "0.72.0",
+      "@opentelemetry/instrumentation-mysql": "0.66.0",
+      "@opentelemetry/instrumentation-mysql2": "0.66.0",
+      "@opentelemetry/instrumentation-mongodb": "0.73.0",
+      "@opentelemetry/instrumentation-redis": "0.68.0",
+      "@opentelemetry/instrumentation-ioredis": "0.68.0"
+    },
+    "esm": {
+      "@opentelemetry/instrumentation": "0.220.0"
+    }
+  },
+  "python": {
+    "dependencies": {
+      "opentelemetry-api": "1.43.0",
+      "opentelemetry-sdk": "1.43.0",
+      "opentelemetry-exporter-otlp": "1.43.0",
+      "opentelemetry-instrumentation": "0.64b0",
+      "opentelemetry-instrumentation-fastapi": "0.64b0",
+      "opentelemetry-instrumentation-flask": "0.64b0",
+      "opentelemetry-instrumentation-logging": "0.64b0",
+      "opentelemetry-instrumentation-requests": "0.64b0",
+      "opentelemetry-instrumentation-sqlalchemy": "0.64b0",
+      "opentelemetry-instrumentation-psycopg2": "0.64b0",
+      "opentelemetry-instrumentation-psycopg": "0.64b0",
+      "opentelemetry-instrumentation-asyncpg": "0.64b0",
+      "opentelemetry-instrumentation-pymongo": "0.64b0",
+      "opentelemetry-instrumentation-redis": "0.64b0",
+      "opentelemetry-instrumentation-mysql": "0.64b0",
+      "opentelemetry-instrumentation-pymysql": "0.64b0"
+    }
+  },
+  "go": {
+    "modules": [
+      {
+        "path": "go.opentelemetry.io/otel",
+        "version": "v1.35.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp",
+        "version": "v1.35.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+        "version": "v1.35.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/sdk",
+        "version": "v1.35.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/sdk/metric",
+        "version": "v1.35.0"
+      }
+    ]
+  }
+}
