@@ -26,7 +26,10 @@ func selectCommand(managers []string) ([]string, error) {
 		{"yarn", "install"},
 		{"npm", "install"},
 		{"python", "-m", "pip", "install", "-r", "requirements.txt"},
-		{"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"},
+		// `extent instrument` already writes pinned requirements into go.mod.
+		// `go mod tidy` resolves go.sum against those pins; `go get` without
+		// versions would upgrade past them and can raise the go directive.
+		{"go", "mod", "tidy"},
 		{"dotnet", "restore"},
 	} {
 		key := x[0]

@@ -18,7 +18,7 @@ func TestInstallCommandForPackageManagers(t *testing.T) {
 		{name: "pnpm", managers: []string{"pnpm"}, want: []string{"pnpm", "install"}},
 		{name: "yarn", managers: []string{"yarn"}, want: []string{"yarn", "install"}},
 		{name: "pip", managers: []string{"pip"}, want: []string{"python", "-m", "pip", "install", "-r", "requirements.txt"}},
-		{name: "go", managers: []string{"go-modules"}, want: []string{"go", "get", "go.opentelemetry.io/otel", "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp", "go.opentelemetry.io/otel/sdk"}},
+		{name: "go", managers: []string{"go-modules"}, want: []string{"go", "mod", "tidy"}},
 		{name: "dotnet", managers: []string{"dotnet"}, want: []string{"dotnet", "restore"}},
 		{name: "nuget", managers: []string{"nuget"}, want: []string{"dotnet", "restore"}},
 	}
@@ -41,14 +41,14 @@ func TestInstallCommandForPackageManagers(t *testing.T) {
 	}
 }
 
-func TestInstallCommandForGoAddsOpenTelemetryPackages(t *testing.T) {
+func TestInstallCommandForGoKeepsPinnedVersions(t *testing.T) {
 	command, ok := InstallCommand([]string{"go-modules"})
 	if !ok {
 		t.Fatal("expected go install command")
 	}
 	joined := strings.Join(command, " ")
-	if !strings.Contains(joined, "go get") || !strings.Contains(joined, "go.opentelemetry.io/otel") {
-		t.Fatalf("expected go get OpenTelemetry command, got %q", joined)
+	if strings.Contains(joined, "go get") {
+		t.Fatalf("go get without versions upgrades past the pinned OpenTelemetry versions, got %q", joined)
 	}
 }
 
