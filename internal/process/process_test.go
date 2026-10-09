@@ -100,3 +100,29 @@ func TestHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestRunnerReplaceEnvDoesNotInheritEnvironment(t *testing.T) {
+	t.Setenv("EXTENT_TEST_SECRET", "leak")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Runner{Env: []string{"EXTENT_PROCESS_HELPER=env"}, ReplaceEnv: true}
+	res := r.Run(context.Background(), exe, "-test.run=TestProcessHelperPrintsEnvironment")
+	if res.Err != nil {
+		t.Fatalf("helper failed: %v (%s)", res.Err, res.Stderr)
+	}
+	if strings.Contains(res.Stdout, "EXTENT_TEST_SECRET") {
+		t.Fatalf("inherited environment leaked into the child: %s", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "EXTENT_PROCESS_HELPER=env") {
+		t.Fatalf("explicit environment missing from the child: %s", res.Stdout)
+	}
+}
+
+func TestProcessHelperPrintsEnvironment(t *testing.T) {
+	if os.Getenv("EXTENT_PROCESS_HELPER") != "env" {
+		t.Skip("helper process only")
+	}
+	fmt.Println(strings.Join(os.Environ(), "\n"))
+}

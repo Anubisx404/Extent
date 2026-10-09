@@ -28,6 +28,9 @@ type Runner struct {
 	MaxOutput int
 	Dir       string
 	Env       []string
+	// ReplaceEnv runs the process with only Env instead of overlaying Env on
+	// the inherited environment.
+	ReplaceEnv bool
 }
 
 func (r Runner) Run(ctx context.Context, executable string, args ...string) Result {
@@ -46,7 +49,9 @@ func (r Runner) Run(ctx context.Context, executable string, args ...string) Resu
 	defer cancel()
 	cmd := exec.CommandContext(c, executable, args...)
 	cmd.Dir = r.Dir
-	if len(r.Env) > 0 {
+	if r.ReplaceEnv {
+		cmd.Env = append([]string{}, r.Env...)
+	} else if len(r.Env) > 0 {
 		cmd.Env = overlayEnvironment(os.Environ(), r.Env)
 	}
 	max := r.MaxOutput
