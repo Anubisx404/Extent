@@ -1,5 +1,13 @@
 # Project-local documentation, plans, fixtures, and smoke artifacts
-docs/
+# docs/ holds private notes: ignore everything in it, then re-include only the
+# public release docs listed below. Do not replace this with a bare docs/ rule.
+docs/*
+!docs/cli.md
+!docs/generated-files.md
+!docs/architecture.md
+!docs/support-matrix.md
+!docs/troubleshooting.md
+!docs/upgrading.md
 plans/
 baseline_test/
 .smoke/
@@ -17,18 +25,18 @@ graphify-out/
 .omx/
 .qwen/
 
-# Extent-generated local state
+# Extent-generated local state (root-only; anchored so same-named test fixtures are not ignored)
 .extent/
 .gocache/
-.env.observability
-docker-compose.observability.yml
-otel-collector.yml
-tempo.yml
-loki.yml
-prometheus.yml
-prometheus-alerts.yml
-grafana/
-extent.codemods/
+/.env.observability
+/docker-compose.observability.yml
+/otel-collector.yml
+/tempo.yml
+/loki.yml
+/prometheus.yml
+/prometheus-alerts.yml
+/grafana/
+/extent.codemods/
 *.exe
 /dist/
 
