@@ -291,6 +291,9 @@ func prometheusVector(label, labelValue, value string) string {
 }
 
 func TestBuildExecutesSoakTestAndPopulatesSoakMetrics(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow: drives a timed soak test; run without -short")
+	}
 	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
