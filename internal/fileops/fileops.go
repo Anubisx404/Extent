@@ -62,6 +62,9 @@ func NewPlan(root, kind string, steps []Step) (Plan, error) {
 		if step.Path == "" || clean == "." || filepath.IsAbs(step.Path) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return Plan{}, ErrUnsafePath
 		}
+		if err := state.ValidateRelativePath(step.Path); err != nil {
+			return Plan{}, fmt.Errorf("%w: %v", ErrUnsafePath, err)
+		}
 		switch step.Action {
 		case Create, Update, Delete:
 		default:
@@ -83,6 +86,11 @@ type Options struct {
 	// FailAfter injects a failure before applying the step at this zero-based
 	// count. Values <= 0 disable injection.
 	FailAfter int
+	// FailWriteAt injects a failure before the Nth (1-based) mutating
+	// filesystem operation of the apply: backup writes, target writes, deletes
+	// and the manifest save, in that order. Values <= 0 disable injection. It
+	// exists so tests can prove rollback at every write boundary.
+	FailWriteAt int
 }
 
 type snapshot struct {
@@ -169,6 +177,16 @@ func ApplyWithOptions(plan Plan, options Options) (manifest state.Manifest, err 
 	operation := state.Operation{ID: operationID, Kind: plan.Kind}
 	applied := make([]snapshot, 0, len(prepared))
 	createdDirs := []string{}
+	writes := 0
+	// injected reports the injected failure for the next mutating operation,
+	// if the test asked for one. Rollback writes are never injected.
+	injected := func() error {
+		writes++
+		if options.FailWriteAt > 0 && writes == options.FailWriteAt {
+			return fmt.Errorf("injected write failure at write %d", writes)
+		}
+		return nil
+	}
 	rollback := func(primary error) error {
 		var rollbackErrors []error
 		for i := len(applied) - 1; i >= 0; i-- {
@@ -206,6 +224,9 @@ func ApplyWithOptions(plan Plan, options Options) (manifest state.Manifest, err 
 				return manifest, rollback(err)
 			}
 			createdDirs = append(createdDirs, newDirs...)
+			if err := injected(); err != nil {
+				return manifest, rollback(err)
+			}
 			if err := atomicWrite(backupPath, prepared.before.data, 0o600); err != nil {
 				return manifest, rollback(err)
 			}
@@ -219,11 +240,17 @@ func ApplyWithOptions(plan Plan, options Options) (manifest state.Manifest, err 
 				return manifest, rollback(err)
 			}
 			createdDirs = append(createdDirs, newDirs...)
+			if err := injected(); err != nil {
+				return manifest, rollback(err)
+			}
 			if err := atomicWrite(prepared.fullPath, step.Data, stepMode(step)); err != nil {
 				return manifest, rollback(err)
 			}
 			entry.After = state.Hash(step.Data)
 		case Delete:
+			if err := injected(); err != nil {
+				return manifest, rollback(err)
+			}
 			if err := os.Remove(prepared.fullPath); err != nil {
 				return manifest, rollback(err)
 			}
@@ -232,6 +259,9 @@ func ApplyWithOptions(plan Plan, options Options) (manifest state.Manifest, err 
 	}
 
 	manifest.Operations = append(manifest.Operations, operation)
+	if err := injected(); err != nil {
+		return manifest, rollback(err)
+	}
 	if err := state.Save(plan.Root, manifest); err != nil {
 		return manifest, rollback(err)
 	}
@@ -426,6 +456,9 @@ func inspect(path string) (snapshot, error) {
 }
 
 func safeTarget(root, relative string) (string, error) {
+	if err := state.ValidateRelativePath(relative); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnsafePath, err)
+	}
 	full := filepath.Join(root, relative)
 	if !contained(root, full) {
 		return "", ErrUnsafePath
