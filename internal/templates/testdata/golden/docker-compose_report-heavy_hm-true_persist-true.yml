@@ -1,0 +1,106 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    command:
+      - --config=/etc/otel-collector.yml
+    ports:
+      - 127.0.0.1:4317:4317
+      - 127.0.0.1:4318:4318
+    volumes:
+      - ./otel-collector.yml:/etc/otel-collector.yml:ro
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+      - cadvisor
+      - node-exporter
+    healthcheck:
+      test:
+        - CMD
+        - /otelcol-contrib
+        - validate
+        - --config=/etc/otel-collector.yml
+      interval: 10s
+      timeout: 5s
+      retries: 6
+  grafana:
+    image: grafana/grafana:12.4.12@sha256:83be3e511ede559bee80e2215bb1987cb1246075461cb961beb515b0341e7aea
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?run extent apply}
+    ports:
+      - 127.0.0.1:3000:3000
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- http://localhost:3000/api/health >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  tempo:
+    image: grafana/tempo:2.9.5@sha256:785fd6c81d7f26ff0973208cd7093ac6030e13946c288612ff32f02416941d3a
+    user: "0:0"
+    command:
+      - -config.file=/etc/tempo.yaml
+    ports:
+      - 127.0.0.1:3200:3200
+    volumes:
+      - ./tempo.yml:/etc/tempo.yaml:ro
+      - tempo-data:/tmp/tempo
+  loki:
+    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
+    command:
+      - -config.file=/etc/loki/local-config.yaml
+    ports:
+      - 127.0.0.1:3100:3100
+    volumes:
+      - ./loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    ports:
+      - 127.0.0.1:9090:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- http://localhost:9090/-/ready >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57
+    privileged: true
+    ports:
+      - 127.0.0.1:8088:8080
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+  node-exporter:
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+    command:
+      - --path.rootfs=/host
+    ports:
+      - 127.0.0.1:9100:9100
+    volumes:
+      - /:/host:ro,rslave
+volumes:
+  grafana-data:
+  loki-data:
+  prometheus-data:
+  tempo-data:

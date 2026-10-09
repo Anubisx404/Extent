@@ -10,6 +10,7 @@ import (
 	"github.com/Anubisx404/Extent/internal/fileops"
 	"github.com/Anubisx404/Extent/internal/planner"
 	"github.com/Anubisx404/Extent/internal/state"
+	"gopkg.in/yaml.v3"
 )
 
 func TestWriteLGTMWritesV1FileSet(t *testing.T) {
@@ -68,7 +69,7 @@ func TestWriteLGTMDefaultIsPortablePersistentAndLoopbackOnly(t *testing.T) {
 	if strings.Contains(prometheus, "cadvisor:8080") || strings.Contains(prometheus, "node-exporter:9100") {
 		t.Fatalf("portable Prometheus config contains host targets:\n%s", prometheus)
 	}
-	for _, required := range []string{`targets: ["otel-collector:8888"]`, `targets: ["otel-collector:9464"]`} {
+	for _, required := range []string{"- otel-collector:8888", "- otel-collector:9464"} {
 		if !strings.Contains(prometheus, required) {
 			t.Fatalf("Prometheus config missing %q:\n%s", required, prometheus)
 		}
@@ -161,4 +162,166 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+type collectorConfig struct {
+	Processors map[string]collectorProcessor `yaml:"processors"`
+	Service    struct {
+		Pipelines map[string]struct {
+			Processors []string `yaml:"processors"`
+		} `yaml:"pipelines"`
+	} `yaml:"service"`
+}
+
+// collectorProcessor is a superset of the processor shapes used by the template;
+// fields absent from a given processor simply stay zero.
+type collectorProcessor struct {
+	NumTraces  int               `yaml:"num_traces"`
+	Attributes []collectorAttr   `yaml:"attributes"`
+	Policies   []collectorPolicy `yaml:"policies"`
+}
+
+type collectorAttr struct {
+	Key    string `yaml:"key"`
+	Value  string `yaml:"value"`
+	Action string `yaml:"action"`
+}
+
+type collectorPolicy struct {
+	Name          string `yaml:"name"`
+	Type          string `yaml:"type"`
+	OTTLCondition *struct {
+		Span []string `yaml:"span"`
+	} `yaml:"ottl_condition"`
+	Probabilistic *struct {
+		SamplingPercentage float64 `yaml:"sampling_percentage"`
+	} `yaml:"probabilistic"`
+}
+
+func parseCollector(t *testing.T, profile string) collectorConfig {
+	t.Helper()
+	var cfg collectorConfig
+	if err := yaml.Unmarshal([]byte(collectorYAMLForProfile(profile)), &cfg); err != nil {
+		t.Fatalf("collector config for profile %q is not valid YAML: %v", profile, err)
+	}
+	return cfg
+}
+
+func TestCollectorTailSamplingHasNoAlwaysSampleAndKeepsCorrelatedTraces(t *testing.T) {
+	cfg := parseCollector(t, "full")
+	ts := cfg.Processors["tail_sampling"]
+	if ts.NumTraces != 50000 {
+		t.Fatalf("num_traces = %d, want 50000", ts.NumTraces)
+	}
+	var hasCorrelation, hasProbabilistic bool
+	for _, p := range ts.Policies {
+		if p.Type == "always_sample" {
+			t.Fatalf("tail_sampling must not contain always_sample policy %q", p.Name)
+		}
+		if p.Type == "ottl_condition" && p.OTTLCondition != nil {
+			for _, condition := range p.OTTLCondition.Span {
+				if strings.Contains(condition, `attributes["http.request.header.x_request_id"]`) {
+					hasCorrelation = true
+				}
+			}
+		}
+		if p.Type == "probabilistic" && p.Probabilistic != nil && p.Probabilistic.SamplingPercentage == 10 {
+			hasProbabilistic = true
+		}
+	}
+	if !hasCorrelation {
+		t.Fatalf("missing x_request_id keep policy: %#v", ts.Policies)
+	}
+	if !hasProbabilistic {
+		t.Fatalf("missing 10%% probabilistic baseline: %#v", ts.Policies)
+	}
+}
+
+func TestCollectorCardinalityProcessorIsMetricsOnly(t *testing.T) {
+	for _, profile := range []string{"full", "minimal", "low-resource", "report-heavy", "high-cardinality-safe"} {
+		cfg := parseCollector(t, profile)
+		card, ok := cfg.Processors["resource/metrics_cardinality"]
+		if !ok {
+			t.Fatalf("profile %q: resource/metrics_cardinality processor missing", profile)
+		}
+		deleted := map[string]bool{}
+		for _, a := range card.Attributes {
+			if a.Action != "delete" {
+				t.Fatalf("profile %q: cardinality processor has non-delete action for %q", profile, a.Key)
+			}
+			deleted[a.Key] = true
+		}
+		for _, key := range []string{"process.pid", "process.command_args", "process.command", "process.command_line", "process.executable.path", "process.executable.name", "process.owner", "process.runtime.description", "host.id", "host.name", "service.instance.id"} {
+			if !deleted[key] {
+				t.Fatalf("profile %q: cardinality processor does not delete %q", profile, key)
+			}
+		}
+		for _, key := range []string{"service.name", "service.namespace", "deployment.environment", "telemetry.sdk.language"} {
+			if deleted[key] {
+				t.Fatalf("profile %q: cardinality processor must not delete %q", profile, key)
+			}
+		}
+		if p := cfg.Service.Pipelines["metrics"].Processors; !containsString(p, "resource/metrics_cardinality") {
+			t.Fatalf("profile %q: metrics pipeline %v lacks cardinality processor", profile, p)
+		}
+		if p := cfg.Service.Pipelines["traces"].Processors; containsString(p, "resource/metrics_cardinality") {
+			t.Fatalf("profile %q: traces pipeline %v must not use cardinality processor", profile, p)
+		}
+		if p := cfg.Service.Pipelines["logs"].Processors; containsString(p, "resource/metrics_cardinality") {
+			t.Fatalf("profile %q: logs pipeline %v must not use cardinality processor", profile, p)
+		}
+	}
+}
+
+func TestCollectorDeploymentEnvironmentDoesNotOverwriteAppValue(t *testing.T) {
+	cfg := parseCollector(t, "full")
+	for _, a := range cfg.Processors["resource"].Attributes {
+		if a.Key == "deployment.environment" && a.Action != "insert" {
+			t.Fatalf("deployment.environment action = %q, want insert", a.Action)
+		}
+	}
+}
+
+func TestCollectorLowResourceKeepsSmallTraceBuffer(t *testing.T) {
+	cfg := parseCollector(t, "low-resource")
+	if got := cfg.Processors["tail_sampling"].NumTraces; got != 2000 {
+		t.Fatalf("low-resource num_traces = %d, want 2000", got)
+	}
+}
+
+func TestPrometheusDoesNotEnableUnusedRemoteWriteReceiver(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteLGTM(root, planner.Plan{Root: root}, WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	compose := mustRead(t, filepath.Join(root, "docker-compose.observability.yml"))
+	if strings.Contains(compose, "enable-remote-write-receiver") {
+		t.Fatalf("compose still enables remote write receiver:\n%s", compose)
+	}
+}
+
+func TestGrafanaCredentialsComeFromEnvFileAndLoopbackBound(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteLGTM(root, planner.Plan{Root: root}, WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	compose := mustRead(t, filepath.Join(root, "docker-compose.observability.yml"))
+	for _, required := range []string{
+		"GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}",
+		"GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?run extent apply}",
+		"127.0.0.1",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Fatalf("compose missing %q:\n%s", required, compose)
+		}
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
