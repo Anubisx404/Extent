@@ -154,3 +154,63 @@ networks:
 		t.Fatalf("expected exactly [ecommerce-net] network, got %#v", result.Docker.Networks)
 	}
 }
+
+func TestServiceNamePrefersPackageJSONWithoutScope(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "folder-name")
+	mustWrite(t, filepath.Join(root, "package.json"), `{"name":"@acme/checkout-api","dependencies":{"express":"^4.0.0"}}`)
+	mustWrite(t, filepath.Join(root, "pyproject.toml"), "[project]\nname = \"ignored\"\n")
+
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceName != "checkout-api" {
+		t.Fatalf("serviceName = %q, want checkout-api", result.ServiceName)
+	}
+}
+
+func TestServiceNameFromPyprojectProjectSectionOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "folder-name")
+	mustWrite(t, filepath.Join(root, "pyproject.toml"), `[tool.poetry]
+name = "wrong-name"
+
+[project]
+name = "orders-worker"
+version = "1.0.0"
+`)
+	mustWrite(t, filepath.Join(root, "requirements.txt"), "flask==3.0.3\n")
+
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceName != "orders-worker" {
+		t.Fatalf("serviceName = %q, want orders-worker", result.ServiceName)
+	}
+}
+
+func TestServiceNameFromGoModuleSkipsMajorVersionSuffix(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "folder-name")
+	mustWrite(t, filepath.Join(root, "go.mod"), "module github.com/acme/payments/v2\n\ngo 1.22\n")
+
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceName != "payments" {
+		t.Fatalf("serviceName = %q, want payments", result.ServiceName)
+	}
+}
+
+func TestServiceNameFallsBackToFolderName(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "plain-folder")
+	mustWrite(t, filepath.Join(root, "server.js"), "const express = require('express')\n")
+
+	result, err := Analyze(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceName != "plain-folder" {
+		t.Fatalf("serviceName = %q, want plain-folder", result.ServiceName)
+	}
+}

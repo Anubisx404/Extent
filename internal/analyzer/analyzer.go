@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Anubisx404/Extent/internal/process"
 	"github.com/Anubisx404/Extent/internal/scanner"
 	"gopkg.in/yaml.v3"
 )
@@ -61,7 +62,7 @@ func AnalyzeWithOptions(root string, opts Options) (Result, error) {
 	}
 	result := Result{
 		Root:              scan.Root,
-		ServiceName:       filepath.Base(scan.Root),
+		ServiceName:       detectServiceName(scan.Root),
 		Runtime:           scan.Runtimes,
 		Frameworks:        scan.Frameworks,
 		Entrypoints:       scan.Entrypoints,
@@ -502,13 +503,13 @@ func detectComposeValues(text, pattern string) []string {
 	return values
 }
 
-func inspectDynamicRoutes(root string, result *Result) {
-	nodeCmd, err := exec.LookPath("node")
-	if err == nil {
-		for _, ep := range result.Entrypoints {
-			if strings.HasSuffix(ep, ".js") {
-				fullPath := filepath.Join(root, ep)
-				script := `const path = require('path');
+// dynamicTimeout bounds each Node process started for --dynamic inspection.
+const dynamicTimeout = 3 * time.Second
+
+// dynamicScript loads one entrypoint and prints the routes registered on an
+// Express-style router as a single JSON line. Load failures are written to
+// stderr and exit non-zero so the caller can record them as warnings.
+const dynamicScript = `const path = require('path');
 try {
   const mod = require(path.resolve(process.argv[1]));
   const app = mod.default || mod;
@@ -522,32 +523,105 @@ try {
     });
     if (routes.length > 0) console.log(JSON.stringify(routes));
   }
-} catch (e) {}`
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				cmd := exec.CommandContext(ctx, nodeCmd, "-e", script, fullPath)
-				cmd.Dir = root
-				out, cmdErr := cmd.Output()
-				cancel()
-				if cmdErr == nil && len(out) > 0 {
-					var dynamicRoutes []struct {
-						Path    string   `json:"path"`
-						Methods []string `json:"methods"`
-					}
-					if json.Unmarshal(out, &dynamicRoutes) == nil {
-						for _, dr := range dynamicRoutes {
-							for _, m := range dr.Methods {
-								result.Routes = append(result.Routes, Route{
-									Method: m,
-									Path:   dr.Path,
-									File:   ep,
-								})
-							}
-						}
-					}
-				}
-			}
+} catch (e) {
+  console.error('extent-dynamic: ' + (e && e.message ? e.message : String(e)));
+  process.exitCode = 1;
+}`
+
+// dynamicEnv is the only environment handed to the dynamic Node process. The
+// target repository is untrusted, so inherited secrets must not be visible.
+func dynamicEnv() []string {
+	env := []string{"NODE_ENV=extent-analysis"}
+	for _, name := range []string{"PATH", "HOME", "USERPROFILE", "SYSTEMROOT"} {
+		if value := os.Getenv(name); value != "" {
+			env = append(env, name+"="+value)
 		}
 	}
+	return env
+}
+
+func inspectDynamicRoutes(root string, result *Result) {
+	var targets []string
+	for _, ep := range result.Entrypoints {
+		if strings.HasSuffix(ep, ".js") {
+			targets = append(targets, ep)
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	nodeCmd, err := exec.LookPath("node")
+	if err != nil {
+		addDynamicWarning(result, "", "node not found on PATH; dynamic route inspection skipped")
+		return
+	}
+	if abs, absErr := filepath.Abs(nodeCmd); absErr == nil {
+		nodeCmd = abs
+	}
+	for _, ep := range targets {
+		routes, detail := runDynamicEntrypoint(root, nodeCmd, ep)
+		if detail != "" {
+			addDynamicWarning(result, ep, detail)
+			continue
+		}
+		result.Routes = append(result.Routes, routes...)
+	}
+}
+
+// runDynamicEntrypoint executes one entrypoint under Node and returns the
+// routes it registered. A non-empty detail string describes why the entrypoint
+// could not be inspected; it is never a fatal error.
+func runDynamicEntrypoint(root, nodeCmd, ep string) ([]Route, string) {
+	runner := process.Runner{Timeout: dynamicTimeout, MaxOutput: 1 << 20, Dir: root, Env: dynamicEnv(), ReplaceEnv: true}
+	res := runner.Run(context.Background(), nodeCmd, "-e", dynamicScript, filepath.Join(root, ep))
+	if res.TimedOut {
+		return nil, fmt.Sprintf("timed out after %s", dynamicTimeout)
+	}
+	if res.Err != nil {
+		detail := strings.TrimSpace(res.Stderr)
+		if detail == "" {
+			detail = res.Err.Error()
+		}
+		return nil, truncateDetail(detail)
+	}
+	if res.StdoutTruncated {
+		return nil, "route output exceeded the size limit"
+	}
+	line := lastNonEmptyLine(res.Stdout)
+	if line == "" {
+		return nil, ""
+	}
+	var dynamicRoutes []struct {
+		Path    string   `json:"path"`
+		Methods []string `json:"methods"`
+	}
+	if err := json.Unmarshal([]byte(line), &dynamicRoutes); err != nil {
+		return nil, "could not parse route output"
+	}
+	var routes []Route
+	for _, dr := range dynamicRoutes {
+		for _, m := range dr.Methods {
+			routes = append(routes, Route{Method: m, Path: dr.Path, File: ep})
+		}
+	}
+	return routes, ""
+}
+
+func addDynamicWarning(result *Result, path, detail string) {
+	result.Warnings = append(result.Warnings, scanner.Warning{Kind: "dynamic", Path: path, Detail: detail})
+}
+
+func lastNonEmptyLine(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func truncateDetail(detail string) string {
+	const limit = 500
+	if len(detail) > limit {
+		return detail[:limit] + "..."
+	}
+	return detail
 }
 
 func recommendations(result Result) []string {
@@ -603,13 +677,94 @@ func sortedUnique(values []string) []string {
 
 type RouteStr string
 
-func shouldSkip(name string) bool {
-	return scanner.IsExcludedDir(name)
-}
-
 func isComposeFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
 	return base == "docker-compose.yml" || base == "docker-compose.yaml" || strings.HasPrefix(base, "docker-compose.") || strings.HasPrefix(base, "compose.")
+}
+
+// detectServiceName prefers the project's own package name over the folder
+// name: package.json name (npm scope stripped), then pyproject [project].name,
+// then the go.mod module path's last element, and finally the folder name.
+func detectServiceName(root string) string {
+	if name := packageJSONName(root); name != "" {
+		return name
+	}
+	if name := pyprojectName(root); name != "" {
+		return name
+	}
+	if name := goModuleName(root); name != "" {
+		return name
+	}
+	return filepath.Base(root)
+}
+
+func packageJSONName(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return ""
+	}
+	name := strings.TrimSpace(pkg.Name)
+	if strings.HasPrefix(name, "@") {
+		if i := strings.Index(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+	}
+	return strings.TrimSpace(name)
+}
+
+var (
+	tomlSectionRx = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*(#.*)?$`)
+	tomlNameRx    = regexp.MustCompile(`^\s*name\s*=\s*["']([^"']+)["']`)
+)
+
+func pyprojectName(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "pyproject.toml"))
+	if err != nil {
+		return ""
+	}
+	inProject := false
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		if m := tomlSectionRx.FindStringSubmatch(line); m != nil {
+			inProject = strings.TrimSpace(m[1]) == "project"
+			continue
+		}
+		if inProject {
+			if m := tomlNameRx.FindStringSubmatch(line); m != nil {
+				return strings.TrimSpace(m[1])
+			}
+		}
+	}
+	return ""
+}
+
+var goMajorSuffixRx = regexp.MustCompile(`^v[0-9]+$`)
+
+func goModuleName(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "module" {
+			continue
+		}
+		module := strings.Trim(fields[1], `"`)
+		parts := strings.Split(strings.TrimSuffix(module, "/"), "/")
+		last := parts[len(parts)-1]
+		// Major-version suffixes (module example.com/x/v2) name the repo, not the service.
+		if goMajorSuffixRx.MatchString(last) && len(parts) > 1 {
+			last = parts[len(parts)-2]
+		}
+		return last
+	}
+	return ""
 }
 
 func exists(path string) bool {
