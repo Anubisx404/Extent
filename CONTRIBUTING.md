@@ -4,7 +4,7 @@ Thank you for contributing to Extent. This document outlines the development wor
 
 ## Prerequisites
 
-- **Go**: 1.22 or higher.
+- **Go**: 1.25 or higher.
 - **Docker & Docker Compose**: Optional for development; required only when running live LGTM stack verification or smoke checks.
 
 ## Local Validation
@@ -52,6 +52,16 @@ Extent follows the [Conventional Commits](https://www.conventionalcommits.org/) 
 - `chore:` Tooling, dependency, or repository maintenance
 - `test:` Adding or updating tests
 - `refactor:` Code refactoring without behavioral changes
+
+## Deprecation Policy
+
+Extent keeps its command-line and machine-readable contracts stable across minor releases:
+
+- **Flags**: a flag is removed only after one minor release that accepts it and prints a deprecation warning to stderr naming the replacement and the release in which it will be removed.
+- **JSON fields**: a field is removed only after one minor release that marks it deprecated in the release notes and emits the same stderr warning when the field's producing command runs with `--json`.
+- **Schema versions**: every `--json` payload carries a top-level `"schema"` member of the form `extent.<command>/v1`. Breaking JSON changes (removing or renaming a field, or changing its meaning or type) bump that version to `/v2`. Additive changes do not bump it.
+
+Breaking changes that skip the deprecation step are treated as regressions and must be reverted or re-scheduled.
 
 ## Submitting Pull Requests
 

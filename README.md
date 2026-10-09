@@ -2,450 +2,188 @@
 
 [![CI](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml/badge.svg)](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/Anubisx404/Extent?logo=github)](https://github.com/Anubisx404/Extent/releases)
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Anubisx404/Extent)](https://goreportcard.com/report/github.com/Anubisx404/Extent)
-[![Security: govulncheck](https://img.shields.io/badge/Security-govulncheck-blue?logo=go&logoColor=white)](https://github.com/Anubisx404/Extent/actions/workflows/ci.yml)
-[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-OTLP-425CC7?logo=opentelemetry&logoColor=white)](https://opentelemetry.io/)
-[![Grafana LGTM](https://img.shields.io/badge/Grafana-LGTM-F46800?logo=grafana&logoColor=white)](https://grafana.com/oss/)
-[![Status](https://img.shields.io/badge/status-V1_CLI_foundation-brightgreen)](#v1-status)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 
 Extent is a CLI-first observability bootstrapper for local projects. It acts
 like a repo-aware observability engineer: it scans the project, maps runtime
 and framework signals, generates an OpenTelemetry observability contract,
 provisions a Docker LGTM stack, injects safe bootstrap instrumentation, verifies
 telemetry flow, scores signal quality, and generates bottleneck reports from
-Prometheus evidence.
+Prometheus evidence. How it fits together is in [docs/architecture.md](docs/architecture.md).
 
-The product direction is simple: point Extent at a project, let it create an
-observability branch, review the diff, run the local stack, and inspect your
-system through Grafana.
+## Install
 
-## Why Extent Exists
+Building Extent needs **Go 1.25+**. Target projects can use any Go version. The
+local stack needs **Docker with Compose v2**.
 
-Adding observability to an existing project usually means stitching together
-SDK setup, environment variables, Docker networking, collectors, dashboards,
-and verification by hand. Extent turns that into a guided workflow:
+**Release binaries.** Download the archive for your OS and architecture from
+[GitHub Releases](https://github.com/Anubisx404/Extent/releases). Each release
+ships `checksums.txt`, a cosign signature, and provenance attestations. To verify
+them, follow [RELEASING.md](RELEASING.md#6-verify-the-published-artifacts).
 
-```text
-scan -> analyze -> plan -> apply -> instrument -> stack up -> verify -> report -> score
-```
+**With Go:**
 
-```mermaid
-flowchart TD
-    subgraph Discovery ["1. Discovery & Planning"]
-        A["Target Repository"] --> B["extent scan<br/>(Runtime & Framework Detection)"]
-        B --> C["extent analyze<br/>(AST, Routes, DB, Queues)"]
-        C --> D["extent plan<br/>(Rollout Strategy & Profiles)"]
-    end
-
-    subgraph Generation ["2. Provisioning & Instrumentation"]
-        E["extent apply<br/>(extent.yaml & LGTM Configs)"]
-        E --> F["extent instrument<br/>(OTel Bootstrap Injection)"]
-        F --> G["extent deps<br/>(SDK Dependency Sync)"]
-    end
-
-    subgraph Runtime ["3. Stack & Verification"]
-        H["extent stack up<br/>(Docker Compose LGTM Stack)"]
-        H --> I["extent verify / doctor<br/>(Config & Endpoint Checks)"]
-        I --> J["extent smoke<br/>(Synthetic Traffic & Correlation)"]
-    end
-
-    subgraph Governance ["4. Analysis & Quality"]
-        K["extent cardinality<br/>(Loki Label Risk Score)"]
-        L["extent score<br/>(Telemetry Quality Rating)"]
-        M["extent report / baseline<br/>(Prometheus Bottlenecks & Diff)"]
-    end
-
-    D --> E
-    G --> H
-    J --> K
-    J --> L
-    J --> M
-```
-
-Extent treats OpenTelemetry APIs, SDKs, semantic attributes, resources,
-instrumentation scopes, and the Collector pipeline as the observability
-contract. Generated files are meant to be reviewed, diffed, and undone rather
-than hidden behind one-shot scripts.
-
-## Extent vs. Manual Implementation
-
-While a senior engineer can manually instrument a project, Extent provides a 
-systematic approach that reduces the "Observability Cold Start" from days to 
-minutes.
-
-| Feature | Extent Automated | Manual Implementation |
-| :--- | :--- | :--- |
-| **Structural Integrity** | Generates bounded OpenTelemetry bootstrap and local LGTM configuration with pinned dependencies for supported targets. | Requires manual version selection and configuration. |
-| **Cross-Domain Sync** | Uses reviewable, transactional changes with ownership checks, exact backups, idempotent apply, and conflict-safe undo. | Requires manual coordination of SDKs and configuration files. |
-| **Source Changes** | Uses syntax-aware Go import/lifecycle edits; Node and Python bootstrap edits are deliberately constrained. Deep codemods remain experimental. | Requires manual source editing. |
-| **Operational Safety** | Includes built-in cardinality safety checks and telemetry quality scoring (`extent score`). | Risk of "Cardinality Explosion" or broken trace context propagation. |
-| **Feedback Loop** | Service-scoped smoke checks correlate synthetic traffic with Prometheus metrics, Tempo traces, and Loki logs. | Requires custom traffic generation and manual validation. |
-
-## V1 Status
-
-Implemented:
-
-- Repository scanner for Node, Python, Go, .NET, and Java signals.
-- Framework detection for Express, NestJS, Next.js, Fastify, SvelteKit,
-  FastAPI, Django, Flask, ASP.NET Core, and Spring Boot.
-- Package-manager detection for npm, pnpm, yarn, Go modules, Poetry, uv,
-  NuGet, Maven, and Gradle.
-- Database library detection for PostgreSQL, MySQL, MongoDB, Redis, SQLAlchemy,
-  Prisma/ORM hints, and related client packages.
-- Docker Compose detection.
-- Deep analyzer detection for entrypoints, REST routes, external HTTP clients,
-  loggers, queues/jobs, Docker ports/env files/networks, and test commands.
-- Plan generation with proposed changes and next commands.
-- Safe apply flow with optional branch creation.
-- Generated `extent.yaml` observability contract.
-- Apply profiles: `minimal`, `full`, `high-cardinality-safe`, `low-resource`,
-  and `report-heavy`.
-- Generated OpenTelemetry Collector, Tempo, Loki, Prometheus, and Grafana
-  provisioning files.
-- Collector processors for resource enrichment, redaction, memory limiting,
-  batching, and tail sampling.
-- Generated `.env.observability` file for app telemetry settings.
-- Stable `zero-code` and constrained `bootstrap` instrumentation modes for
-  Node.js, Python, and Go. Bootstrap dependencies are pinned and incompatible
-  existing constraints fail before mutation.
-- Node CommonJS/ESM lifecycle, HTTP tracing, metrics, logs, request correlation,
-  and supported database auto-instrumentation.
-- Python Flask/FastAPI lifecycle, traces, metrics, logs, request correlation,
-  and optional supported database instrumentation.
-- Go provider setup, AST-based import/lifecycle injection, dependency
-  reconciliation, and shutdown flushing. Application spans still require Go
-  OpenTelemetry API or framework instrumentation in the target application.
-- `deep` mode is experimental and requires `--experimental`; generated
-  TypeScript, LibCST, Roslyn, OpenRewrite, and JavaParser codemods are not part
-  of the stable V1 support contract.
-- Optional dependency install command execution.
-- Telemetry smoke verification through app traffic plus service-specific
-  Prometheus, Tempo, and Loki correlation. Collector counters are reported only
-  as supporting global evidence.
-- Portable core stack by default. Linux host/container exporters are available
-  only through the explicit host-metrics profile.
-- Starter Grafana dashboard panels for app latency, DB latency, container CPU,
-  container memory, and host CPU.
-- Grafana datasource provisioning for Tempo trace-to-log, trace-to-metric, and
-  service-map links.
-- Prometheus alert rules for high errors, high latency, slow DB queries, queue
-  backlog, memory growth, and missing telemetry.
-- Prometheus-backed bottleneck reports in text, Markdown, HTML, and JSON.
-- Tempo and Loki evidence query clients for trace examples and log anomalies.
-- Before/after baseline storage and report comparison.
-- Telemetry quality scoring through `extent score`.
-- Cardinality safety analysis through `extent cardinality`.
-- Optional end-to-end `verify --url` flow that sends synthetic app traffic and
-  queries Prometheus, Loki, and Tempo readiness.
-- Framework recipe files under `recipes/` for Node, Python, .NET, Java, and Go.
-- Unit tests for scanner, planner, template, instrumenter, dependency, and smoke packages.
-
-Not yet implemented:
-
-- Stable bootstrap or zero-code mutation for .NET and Java; these runtimes are
-  detection-only outside experimental deep codemod generation.
-- Stable deep instrumentation for any language.
-- Package-manager publishing or self-update.
-- Svelte local UI.
-- Tauri desktop package.
-- Browser-level Grafana UI click automation. Extent validates generated config,
-  backing APIs, and live Grafana datasource JSON through `verify --grafana`.
-
-## Install And Run
-
-Prerequisite: Go 1.22+.
-
-From this repo:
-
-```powershell
-go test ./...
-go run ./cmd/extent version
-```
-
-Scan a target project:
-
-```powershell
-go run ./cmd/extent scan C:\path\to\repo
-```
-
-Run the deeper analyzer:
-
-```powershell
-go run ./cmd/extent analyze C:\path\to\repo
-```
-
-Generate a plan:
-
-```powershell
-go run ./cmd/extent plan C:\path\to\repo
-```
-
-Apply the V1 observability files on a branch:
-
-```powershell
-go run ./cmd/extent apply --branch observability/otel-lgtm --profile full C:\path\to\repo
-```
-
-Inject OpenTelemetry bootstrap code and dependency manifest updates:
-
-```powershell
-go run ./cmd/extent instrument --mode bootstrap C:\path\to\repo
-go run ./cmd/extent instrument --mode bootstrap --apply C:\path\to\repo
-go run ./cmd/extent instrument --mode zero-code --dry-run C:\path\to\repo
-go run ./cmd/extent instrument --mode deep --experimental --show-diff C:\path\to\repo
-go run ./cmd/extent instrument --mode deep --experimental --apply C:\path\to\repo
-```
-
-Experimental deep mode writes `extent.codemods/`, which contains reviewable patchers for
-HTTP routes, DB calls, queues, outbound HTTP, business functions, and log
-statements. With `--apply`, Extent runs the detected language codemod commands;
-missing toolchains are reported as command failures instead of being ignored.
-
-Preview or run the dependency install command:
-
-```powershell
-go run ./cmd/extent deps C:\path\to\repo
-go run ./cmd/extent deps --install C:\path\to\repo
-```
-
-Start the generated stack from the target repo:
-
-```powershell
-go run ./cmd/extent stack up --wait --timeout 2m C:\path\to\repo
-```
-
-Verify generated files and local tools:
-
-```powershell
-go run ./cmd/extent verify C:\path\to\repo
-```
-
-Run end-to-end verification against a live app and LGTM stack:
-
-```powershell
-go run ./cmd/extent verify --url http://localhost:8080/health --prometheus http://localhost:9090 --grafana http://localhost:3000 C:\path\to\repo
-```
-
-Send traffic and prove telemetry reached the Collector:
-
-```powershell
-go run ./cmd/extent smoke --url http://localhost:8080/health --service checkout --duration 10s --concurrency 5 --prometheus http://localhost:9090 --tempo http://localhost:3200 --loki http://localhost:3100
-```
-
-Generate a bottleneck report from Prometheus:
-
-```powershell
-go run ./cmd/extent report --service checkout --prometheus http://localhost:9090
-go run ./cmd/extent report --service checkout --soak 30s --url http://localhost:8080/health --concurrency 5 --format markdown --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 --include-data C:\path\to\repo
-go run ./cmd/extent report --service checkout --last 1h --format html --prometheus http://localhost:9090 --compare baseline --include-data C:\path\to\repo
-```
-
-Capture and compare a baseline:
-
-```powershell
-go run ./cmd/extent baseline --service checkout --prometheus http://localhost:9090 --loki http://localhost:3100 --tempo http://localhost:3200 C:\path\to\repo
-go run ./cmd/extent report --service checkout --compare baseline --format markdown
-```
-
-Check Loki label safety:
-
-```powershell
-go run ./cmd/extent cardinality C:\path\to\repo
-```
-
-Score telemetry quality:
-
-```powershell
-go run ./cmd/extent score --prometheus http://localhost:9090
-```
-
-Open Grafana:
-
-```text
-http://localhost:3000
-```
-
-## CLI Commands
-
-```text
-extent scan [--json] [repo]
-extent analyze [--json] [repo]
-extent plan [--json] [repo]
-extent apply [--branch name] [--force] [--profile name] [repo]
-extent instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]
-extent deps [--install] [repo]
-extent smoke --url app-url --service service-name [--duration duration] [--concurrency n] [--rate rps] [--prometheus url] [--tempo url] [--loki url] [--requests n] [--json]
-extent report --service service-name [--soak duration] [--url app-url] [--concurrency n] [--rate rps] [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline] [--include-data] [--json] [repo]
-extent baseline [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
-extent cardinality [--json] [repo]
-extent score [--prometheus url] [--json]
-extent stack up [--wait=true] [--timeout 2m] [--project-name name] [repo]
-extent stack down [repo]
-extent stack status [--json] [repo]
-extent verify [--url app-url] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--requests n] [--json] [repo]
-extent doctor [--json] [repo]
+```sh
+go install github.com/Anubisx404/Extent/cmd/extent@latest
 extent version
 ```
 
-`doctor` performs static project/tool checks. `verify` performs generated-file
-and endpoint readiness checks, with optional live application requests.
+`go install` writes to `$(go env GOPATH)/bin` (`%USERPROFILE%\go\bin` on Windows).
 
-## Generated Files
+## Quickstart (about 5 minutes)
 
-`extent apply` writes these files into the target repo:
+This uses a Node, Python, or Go app in a git repo with a clean working tree.
+Commands are shown for bash (macOS and Linux) and PowerShell (Windows). If
+`extent` is not on your `PATH`, use `./extent` or `.\extent.exe`.
 
-```text
-docker-compose.observability.yml
-otel-collector.yml
-tempo.yml
-loki.yml
-prometheus.yml
-prometheus-alerts.yml
-extent.yaml
-.env.observability
-grafana/
-  provisioning/
-    datasources/datasources.yml
-    dashboards/dashboards.yml
-  dashboards/service-overview.json
-.extent/
-  plan.json
-  report.md
+```bash
+REPO=~/src/checkout
 ```
 
-The generated stack contains:
-
-- OpenTelemetry Collector for OTLP ingest.
-- Tempo for traces.
-- Loki for logs.
-- Prometheus for metrics.
-- Optional cAdvisor and node_exporter services when the generated host-metrics
-  profile is explicitly enabled on a compatible Linux Docker host.
-- Grafana with provisioned datasources and a starter dashboard.
-
-```mermaid
-flowchart LR
-    APP["Target App<br/>(OTel Traces / Metrics / Logs)"] -->|"OTLP gRPC:4317 / HTTP:4318"| OTCP["otel-collector.yml<br/>(OTel Collector)"]
-
-    subgraph LGTM ["Local LGTM Stack (docker-compose.observability.yml)"]
-        PROM["prometheus.yml<br/>(Prometheus Metrics)"]
-        TEMPO["tempo.yml<br/>(Tempo Traces)"]
-        LOKI["loki.yml<br/>(Loki Logs)"]
-        GRAF["grafana/<br/>(Dashboards & Datasources)"]
-
-        PROM --> GRAF
-        TEMPO --> GRAF
-        LOKI --> GRAF
-    end
-
-    OTCP -->|"Remote Write :9090"| PROM
-    OTCP -->|"OTLP Exporter :3200"| TEMPO
-    OTCP -->|"Loki Push API :3100"| LOKI
-
-    CLI_VERIFY["extent smoke / verify / report"] -.->|"Query API"| PROM
-    CLI_VERIFY -.->|"Query API"| TEMPO
-    CLI_VERIFY -.->|"Query API"| LOKI
+```powershell
+$REPO = "C:\src\checkout"
 ```
 
-## Architecture
+**1. Scan** (read-only):
 
-```text
-cmd/extent              CLI entrypoint
-internal/scanner        Repo detection and signals
-internal/analyzer       Deep repository analysis and recommendations
-internal/contract       extent.yaml observability contract rendering
-internal/planner        Proposed changes and next steps
-internal/gitops         Branch creation and git helpers
-internal/instrumenter   Node, Python, and Go OpenTelemetry source injection
-internal/deps           Dependency install command planning/execution
-internal/smoke          App traffic and Prometheus telemetry checks
-internal/evidence       Tempo, Loki, and Prometheus evidence query clients
-internal/reporter       Prometheus-backed bottleneck report synthesis
-internal/recommendations Evidence-backed remediation synthesis
-internal/baseline       Before/after snapshot persistence and comparison
-internal/cardinality    Loki label cardinality safety analysis
-internal/codemods       Generated deep AST/codemod patcher bundle
-internal/scorer         Telemetry quality scoring
-internal/templates      Generated LGTM/OpenTelemetry files
-internal/stack          Docker Compose wrapper
-internal/verifier       Local verification checks
-recipes/                Framework-specific instrumentation recipes
-plans/                  Delivery plans and phase notes
-docs/                   Roadmap and implementation alternatives
+```bash
+extent scan "$REPO"
 ```
 
-```mermaid
-flowchart TD
-    CLI["cmd/extent<br/>(CLI Entrypoint & Dispatcher)"]
-
-    subgraph AnalysisLayer ["Analysis & Contract Engine"]
-        SCAN["internal/scanner"]
-        ANALYZER["internal/analyzer"]
-        PLANNER["internal/planner"]
-        CONTRACT["internal/contract"]
-        CONF["internal/config"]
-    end
-
-    subgraph MutationLayer ["Instrumentation & GitOps"]
-        INST["internal/instrumenter"]
-        DEPS["internal/deps"]
-        CODEMOD["internal/codemods"]
-        GITOPS["internal/gitops"]
-        RECIPES["recipes/"]
-    end
-
-    subgraph ProvisioningLayer ["Stack Provisioning & Control"]
-        TEMPL["internal/templates"]
-        STACK["internal/stack"]
-    end
-
-    subgraph VerificationLayer ["Verification & Evidence Engine"]
-        VERIFY["internal/verifier"]
-        SMOKE["internal/smoke"]
-        EVID["internal/evidence"]
-        REPORT["internal/reporter"]
-        RECOM["internal/recommendations"]
-        BASE["internal/baseline"]
-        CARD["internal/cardinality"]
-        SCORE["internal/scorer"]
-    end
-
-    subgraph TargetArtifacts ["Target System & LGTM Stack"]
-        TARGET_CODE["Application Source & Dependencies"]
-        COMPOSE["docker-compose.observability.yml"]
-        COLLECTOR["OTel Collector (OTLP Ingest)"]
-        BACKENDS["Prometheus / Tempo / Loki / Grafana"]
-    end
-
-    CLI --> SCAN
-    CLI --> INST
-    CLI --> TEMPL
-    CLI --> VERIFY
-
-    SCAN --> ANALYZER
-    ANALYZER --> PLANNER
-    PLANNER --> CONTRACT
-    CONTRACT --> CONF
-    CONF --> TEMPL
-
-    INST --> TARGET_CODE
-    DEPS --> TARGET_CODE
-    CODEMOD --> TARGET_CODE
-
-    TEMPL --> COMPOSE
-    STACK --> COMPOSE
-    COMPOSE --> COLLECTOR
-    COLLECTOR --> BACKENDS
-
-    VERIFY --> TARGET_CODE
-    SMOKE --> COLLECTOR
-    EVID --> BACKENDS
-    REPORT --> BACKENDS
+```powershell
+extent scan $REPO
 ```
 
-## Documentation & Governance
+**2. Generate the observability files on a new branch.** This writes `extent.yaml`,
+the Collector, Prometheus, Loki, Tempo, Grafana, and Compose files, and
+`.env.observability`. `--branch` needs a clean git tree. See
+[docs/generated-files.md](docs/generated-files.md).
 
+```bash
+extent apply --branch observability/otel-lgtm --profile full "$REPO"
+```
+
+```powershell
+extent apply --branch observability/otel-lgtm --profile full $REPO
+```
+
+**3. Preview, then apply, the bootstrap instrumentation.** Review the diff first.
+
+```bash
+extent instrument --mode bootstrap --dry-run "$REPO"
+extent instrument --mode bootstrap --apply "$REPO"
+```
+
+```powershell
+extent instrument --mode bootstrap --dry-run $REPO
+extent instrument --mode bootstrap --apply $REPO
+```
+
+**4. Install SDK dependencies:**
+
+```bash
+extent deps --install "$REPO"
+```
+
+```powershell
+extent deps --install $REPO
+```
+
+**5. Start the LGTM stack** (Docker must be running):
+
+```bash
+extent stack up --wait --timeout 2m "$REPO"
+```
+
+```powershell
+extent stack up --wait --timeout 2m $REPO
+```
+
+**6. Run the app with telemetry settings** in the same shell. From the host, the
+endpoint is `localhost:4318`.
+
+```bash
+export OTEL_SERVICE_NAME=checkout
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+npm start   # or however you normally start the app
+```
+
+```powershell
+$env:OTEL_SERVICE_NAME = "checkout"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318"
+npm start   # or however you normally start the app
+```
+
+**7. Send traffic and check that telemetry arrived:**
+
+```bash
+extent smoke --url http://localhost:8080/health --service checkout --requests 10
+```
+
+```powershell
+extent smoke --url http://localhost:8080/health --service checkout --requests 10
+```
+
+**8. Verify the stack end to end.** Grafana credentials come from the values `apply` recorded.
+
+```bash
+extent verify --url http://localhost:8080/health --service checkout --grafana http://localhost:3000 "$REPO"
+```
+
+```powershell
+extent verify --url http://localhost:8080/health --service checkout --grafana http://localhost:3000 $REPO
+```
+
+**9. Open Grafana** at http://localhost:3000. Log in as user `admin`, with the
+password from `GRAFANA_ADMIN_PASSWORD` in `.env.observability`:
+
+```bash
+grep GRAFANA_ADMIN_PASSWORD "$REPO/.env.observability"
+```
+
+```powershell
+Select-String GRAFANA_ADMIN_PASSWORD "$REPO\.env.observability"
+```
+
+**10. Stop, or undo the instrumentation.** `stack down` keeps data. `instrument --undo`
+refuses if you edited the injected files.
+
+```bash
+extent stack down "$REPO"
+extent instrument --undo "$REPO"
+```
+
+```powershell
+extent stack down $REPO
+extent instrument --undo $REPO
+```
+
+If a step fails, see [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Support
+
+A summary. The full table, with per-mode status and runtime notes, is in
+[docs/support-matrix.md](docs/support-matrix.md).
+
+| Runtime | Frameworks | Bootstrap | Deep (codemods) |
+| --- | --- | --- | --- |
+| Node.js | Express, NestJS, Next.js, Fastify | stable | experimental |
+| Python | Flask, FastAPI, Django | stable | experimental |
+| Go | net/http, Gin, Fiber | stable (HTTP spans need `otelhttp` or framework instrumentation) | detection-only |
+| .NET | ASP.NET Core (with EF Core) | stable | experimental |
+| Java | Spring Boot | detection-only | detection-only |
+| Svelte | Svelte, SvelteKit | detection-only | detection-only |
+
+Deep mode needs `--experimental` and is outside the stable support contract.
+
+## Documentation
+
+- [CLI reference](docs/cli.md): commands, flags and defaults, exit codes, JSON schemas
+- [Generated files and the LGTM stack](docs/generated-files.md): what `apply` writes, profiles, ports, Grafana login
+- [Architecture](docs/architecture.md): workflow, packages, diagrams
+- [Support matrix](docs/support-matrix.md): runtime, framework, and mode status
+- [Troubleshooting](docs/troubleshooting.md): ports, Docker, traces, Grafana login, undo, re-running `apply`
+- [Upgrading](docs/upgrading.md): moving from v1.0.x
+- [Security policy](SECURITY.md): read before `analyze --dynamic` or deep mode, which run target code
+- [Contributing](CONTRIBUTING.md) and [Releasing](RELEASING.md)
 - [License](LICENSE)
-- [Contributing](CONTRIBUTING.md)
-- [Security Policy](SECURITY.md)
