@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -34,7 +35,11 @@ type Result struct {
 	Metrics       []MetricSample      `json:"metrics,omitempty"`
 	Saturation    *SaturationEvidence `json:"saturation,omitempty"`
 	Provenance    []Provenance        `json:"provenance,omitempty"`
-	Warnings      []string            `json:"warnings,omitempty"`
+	// SkippedTraces counts search hits whose detail exceeded the response body
+	// limit. They are skipped rather than failing the whole collection.
+	SkippedTraces int      `json:"skippedTraces,omitempty"`
+	Notes         []string `json:"notes,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 type SaturationEvidence struct {
@@ -152,10 +157,17 @@ func Collect(config Config) Result {
 		for _, trace := range traces {
 			spans, err := queryTempoTrace(client, config.TempoURL, trace.TraceID)
 			if err != nil {
+				if errors.Is(err, observability.ErrBodyLimit) {
+					result.SkippedTraces++
+					continue
+				}
 				result.Warnings = append(result.Warnings, "tempo trace detail query failed: "+err.Error())
 				continue
 			}
 			result.Spans = append(result.Spans, spans...)
+		}
+		if result.SkippedTraces > 0 {
+			result.Notes = append(result.Notes, fmt.Sprintf("skipped %d Tempo trace(s) whose detail exceeded the response body limit", result.SkippedTraces))
 		}
 		result.DBFindings = detectDBFindings(result.Spans)
 		result.ExternalHTTP = detectHTTPFindings(result.Spans)
@@ -208,6 +220,7 @@ func queryTempoTrace(client *http.Client, baseURL, traceID string) ([]SpanEviden
 	if traceID == "" {
 		return nil, nil
 	}
+	traceID = normalizeTraceID(traceID)
 	if !traceIDPattern.MatchString(traceID) {
 		return nil, fmt.Errorf("invalid Tempo trace ID")
 	}
@@ -374,6 +387,19 @@ func firstNonEmpty(values ...string) string {
 
 var traceIDPattern = regexp.MustCompile(`^[0-9a-zA-Z_-]{1,64}$`)
 
+var hexPattern = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+
+// normalizeTraceID left-pads hex trace IDs to the canonical 32 characters.
+// Tempo search results can omit leading zeros (for example 29-31 characters).
+// Non-hex or already-canonical values are returned unchanged.
+func normalizeTraceID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) >= 32 || !hexPattern.MatchString(id) {
+		return id
+	}
+	return strings.Repeat("0", 32-len(id)) + id
+}
+
 func getJSON(client *http.Client, baseURL, path string, q url.Values, target any) error {
 	base, err := observability.ValidateURL(baseURL)
 	if err != nil {
@@ -411,7 +437,7 @@ func queryTempo(client *http.Client, baseURL, service string, window time.Durati
 	out := make([]TraceExample, 0, len(payload.Traces))
 	for _, trace := range payload.Traces {
 		out = append(out, TraceExample{
-			TraceID:         trace.TraceID,
+			TraceID:         normalizeTraceID(trace.TraceID),
 			RootServiceName: trace.RootServiceName,
 			RootTraceName:   trace.RootTraceName,
 			DurationMS:      trace.DurationMS,
@@ -573,9 +599,9 @@ func querySaturation(client *http.Client, baseURL, service, window string) (*Sat
 	serviceQuote := strconv.Quote(service)
 	var errs []string
 
-	rateLimit429, _, found429, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(increase(http_server_duration_milliseconds_count{service_name=%s, status=\"429\"}[%s]))", serviceQuote, window))
+	rateLimit429, _, found429, err := prometheusScalar(client, baseURL, fmt.Sprintf("sum(increase(http_server_duration_milliseconds_count{service_name=%s, http_status_code=\"429\"}[%s]))", serviceQuote, window))
 	if err != nil || !found429 || rateLimit429 == 0 {
-		fallbackVal, _, fallbackFound, fallbackErr := prometheusScalar(client, baseURL, fmt.Sprintf("sum(rate(http_server_duration_milliseconds_count{service_name=%s, status=\"429\"}[%s]))", serviceQuote, window))
+		fallbackVal, _, fallbackFound, fallbackErr := prometheusScalar(client, baseURL, fmt.Sprintf("sum(rate(http_server_duration_milliseconds_count{service_name=%s, http_status_code=\"429\"}[%s]))", serviceQuote, window))
 		if fallbackErr == nil && fallbackFound && fallbackVal > 0 {
 			rateLimit429 = fallbackVal
 		} else if err != nil && fallbackErr != nil {

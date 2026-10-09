@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Anubisx404/Extent/internal/observability"
 )
 
 func TestCollectPullsTempoLokiAndPrometheusEvidence(t *testing.T) {
@@ -123,5 +125,71 @@ func TestCollectPullsSaturationAndSlopeEvidence(t *testing.T) {
 	}
 	if result.Saturation.MemoryGrowthBytesSec != 1048576.0 {
 		t.Fatalf("expected MemoryGrowthBytesSec 1048576.0, got %f", result.Saturation.MemoryGrowthBytesSec)
+	}
+}
+
+func TestCollectSkipsOversizedTraceAndPadsTraceIDs(t *testing.T) {
+	short := "abcdef0123456789abcdef012345678" // 31 hex characters, leading zero dropped by Tempo
+	canonical := "0" + short
+	ok := "1234567890abcdef1234567890abcdef"
+	var detailPaths []string
+	tempo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/search":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"traces":[{"traceID":"` + short + `","rootServiceName":"checkout"},{"traceID":"` + ok + `","rootServiceName":"checkout"}]}`))
+		case strings.HasPrefix(r.URL.Path, "/api/traces/"):
+			detailPaths = append(detailPaths, r.URL.Path)
+			if strings.HasSuffix(r.URL.Path, short) || strings.HasSuffix(r.URL.Path, canonical) {
+				// Oversized detail: exceeds the observability body limit.
+				w.Write([]byte(`{"batches":[]}` + strings.Repeat(" ", int(observability.DefaultBodyLimit)+1)))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"batches":[{"resource":{"attributes":[]},"scopeSpans":[{"spans":[{"traceID":"` + ok + `","spanID":"1111111111111111","name":"GET /","durationNanos":1000000,"attributes":[]}]}]}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer tempo.Close()
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+	}))
+	defer empty.Close()
+
+	result := Collect(Config{PrometheusURL: empty.URL, LokiURL: empty.URL, TempoURL: tempo.URL, Window: "30m", ServiceName: "checkout"})
+	if result.SkippedTraces != 1 {
+		t.Fatalf("SkippedTraces = %d, want 1 (warnings %#v)", result.SkippedTraces, result.Warnings)
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "tempo") {
+			t.Fatalf("oversized trace failed the whole collection: %#v", result.Warnings)
+		}
+	}
+	if len(result.Notes) != 1 {
+		t.Fatalf("expected skip note, got %#v", result.Notes)
+	}
+	if len(result.Traces) != 2 || result.Traces[0].TraceID != canonical {
+		t.Fatalf("search trace IDs not padded: %#v", result.Traces)
+	}
+	if len(detailPaths) != 2 || detailPaths[0] != "/api/traces/"+canonical {
+		t.Fatalf("detail lookups = %#v", detailPaths)
+	}
+	if len(result.Spans) != 1 || result.Spans[0].SpanID != "1111111111111111" {
+		t.Fatalf("spans from the healthy trace were lost: %#v", result.Spans)
+	}
+}
+
+func TestNormalizeTraceIDPadsOnlyShortHex(t *testing.T) {
+	cases := map[string]string{
+		"abc":                              "00000000000000000000000000000abc",
+		"0af7651916cd43dd8448eb211c80319c": "0af7651916cd43dd8448eb211c80319c",
+		"not-hex":                          "not-hex",
+	}
+	for in, want := range cases {
+		if got := normalizeTraceID(in); got != want {
+			t.Fatalf("normalizeTraceID(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
