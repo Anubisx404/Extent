@@ -1,0 +1,9 @@
+stdout:
+stderr:
+Usage of stack up:
+  -project-name string
+    	explicit deterministic Compose project name
+  -timeout duration
+    	bounded startup/readiness timeout (default 2m0s)
+  -wait
+    	wait for service health checks (default true)

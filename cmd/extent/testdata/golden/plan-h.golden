@@ -1,0 +1,5 @@
+stdout:
+stderr:
+Usage of plan:
+  -json
+    	print JSON output

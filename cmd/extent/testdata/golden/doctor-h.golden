@@ -1,0 +1,25 @@
+stdout:
+stderr:
+Usage of doctor:
+  -grafana string
+    	Grafana base URL for live datasource correlation validation
+  -grafana-password string
+    	Grafana password for basic-auth API checks
+  -grafana-token string
+    	Grafana service account token for Bearer API checks; takes precedence over basic auth
+  -grafana-user string
+    	Grafana username for basic-auth API checks
+  -json
+    	print JSON output
+  -loki string
+    	Loki base URL (default "http://localhost:3100")
+  -prometheus string
+    	Prometheus base URL (default "http://localhost:9090")
+  -requests int
+    	number of synthetic app requests when --url is set (default 3)
+  -service string
+    	target service.name for correlated telemetry verification
+  -tempo string
+    	Tempo base URL (default "http://localhost:3200")
+  -url string
+    	application URL to request for end-to-end telemetry verification

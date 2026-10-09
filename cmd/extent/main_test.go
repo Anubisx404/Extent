@@ -247,3 +247,115 @@ func TestReportSoakRequiresURL(t *testing.T) {
 		t.Fatalf("expected error message to contain 'report --soak requires --url', got %v", err)
 	}
 }
+
+func usageLineFor(t *testing.T, key string) string {
+	t.Helper()
+	for _, line := range usageLines {
+		name := strings.Fields(line)
+		if len(name) == 0 {
+			continue
+		}
+		if strings.HasPrefix(key, "stack") {
+			if strings.HasPrefix(line, key+" ") || line == key {
+				return line
+			}
+			continue
+		}
+		if name[0] == key {
+			return line
+		}
+	}
+	t.Fatalf("no usage line for %q", key)
+	return ""
+}
+
+func TestUsageListsEveryRegisteredFlag(t *testing.T) {
+	for key, build := range commandFlagSets() {
+		t.Run(key, func(t *testing.T) {
+			line := usageLineFor(t, key)
+			fs := build()
+			fs.VisitAll(func(f *flag.Flag) {
+				if !strings.Contains(line, "--"+f.Name) {
+					t.Errorf("usage line for %q omits --%s: %s", key, f.Name, line)
+				}
+			})
+		})
+	}
+}
+
+func TestUsageEveryCommandHasUsageLine(t *testing.T) {
+	for _, command := range []string{"version", "scan", "analyze", "plan", "apply", "instrument", "deps", "smoke", "report", "baseline", "cardinality", "score", "stack up", "stack down", "stack status", "verify", "doctor"} {
+		usageLineFor(t, command)
+	}
+}
+
+func TestVerifyUsageIncludesServiceAndGrafanaCredentials(t *testing.T) {
+	for _, command := range []string{"verify", "doctor"} {
+		line := usageLineFor(t, command)
+		for _, flagName := range []string{"--service", "--grafana-user", "--grafana-password", "--grafana-token"} {
+			if !strings.Contains(line, flagName) {
+				t.Fatalf("%s usage missing %s: %s", command, flagName, line)
+			}
+		}
+	}
+}
+
+func parsedSmokeRate(t *testing.T, args []string) (float64, error) {
+	t.Helper()
+	var o smokeOptions
+	fs := newSmokeFlagSet(&o)
+	if err := fs.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return resolveRate(fs, o.Rate, o.Duration)
+}
+
+func TestSmokeRateDefaultsToFiftyWithDurationOnly(t *testing.T) {
+	rate, err := parsedSmokeRate(t, []string{"--duration", "5s"})
+	if err != nil || rate != 50 {
+		t.Fatalf("rate = %v, %v; want 50", rate, err)
+	}
+}
+
+func TestSmokeRateUnsetWithoutDurationIsUnlimited(t *testing.T) {
+	rate, err := parsedSmokeRate(t, []string{"--requests", "3"})
+	if err != nil || rate != 0 {
+		t.Fatalf("rate = %v, %v; want 0", rate, err)
+	}
+}
+
+func TestSmokeExplicitRateZeroMeansUnlimited(t *testing.T) {
+	rate, err := parsedSmokeRate(t, []string{"--duration", "5s", "--rate", "0"})
+	if err != nil || rate != 0 {
+		t.Fatalf("rate = %v, %v; want explicit 0 (unlimited)", rate, err)
+	}
+}
+
+func TestSmokeExplicitRateIsUsedAndNegativeRejected(t *testing.T) {
+	rate, err := parsedSmokeRate(t, []string{"--duration", "5s", "--rate", "12.5"})
+	if err != nil || rate != 12.5 {
+		t.Fatalf("rate = %v, %v; want 12.5", rate, err)
+	}
+	if _, err := parsedSmokeRate(t, []string{"--duration", "5s", "--rate", "-1"}); err == nil || exitCode(err) != 2 {
+		t.Fatalf("explicit -1 accepted: %v", err)
+	}
+}
+
+func TestReportSoakRateDefaultsToFifty(t *testing.T) {
+	var o reportOptions
+	fs := newReportFlagSet(&o)
+	if err := fs.Parse([]string{"--soak", "5s", "--url", "http://127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	rate, err := resolveRate(fs, o.Rate, o.Soak)
+	if err != nil || rate != 50 {
+		t.Fatalf("soak rate = %v, %v; want 50", rate, err)
+	}
+}
+
+func TestRunSmokeRejectsNegativeRateExplicitly(t *testing.T) {
+	err := run([]string{"smoke", "--url", "http://127.0.0.1", "--service", "checkout", "--duration", "1s", "--rate", "-5"})
+	if err == nil || exitCode(err) != 2 {
+		t.Fatalf("error = %v, exit = %d", err, exitCode(err))
+	}
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent stack status --json",
+  "description": "Compose stack component state and health.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.stack-status/v1"
+    },
+    "project": {
+      "type": "string"
+    },
+    "components": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "project",
+    "components"
+  ]
+}

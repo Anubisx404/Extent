@@ -1,0 +1,21 @@
+stdout:
+stderr:
+Usage of instrument:
+  -apply
+    	apply changes explicitly
+  -dry-run
+    	show intended changes without writing
+  -entrypoint string
+    	explicit project-relative entrypoint when detection is ambiguous
+  -experimental
+    	acknowledge experimental deep-mode limitations
+  -force
+    	replace conflicting Extent instrumentation outputs with exact backup
+  -json
+    	print JSON output
+  -mode string
+    	instrumentation mode: zero-code, bootstrap, deep (default "bootstrap")
+  -show-diff
+    	show a simple generated-file diff where available
+  -undo
+    	remove generated Extent instrumentation files

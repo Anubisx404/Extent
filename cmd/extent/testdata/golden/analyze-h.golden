@@ -1,0 +1,7 @@
+stdout:
+stderr:
+Usage of analyze:
+  -dynamic
+    	attempt runtime reflection for registered framework routes
+  -json
+    	print JSON output

@@ -1,0 +1,13 @@
+stdout:
+stderr:
+Usage of score:
+  -json
+    	print JSON output
+  -loki string
+    	Loki base URL; required to measure log/trace correlation with --service
+  -prometheus string
+    	Prometheus base URL (default "http://localhost:9090")
+  -service string
+    	target service.name; enables service identity and log/trace correlation dimensions
+  -tempo string
+    	Tempo base URL; resolves a correlated trace ID as detail for the correlation dimension

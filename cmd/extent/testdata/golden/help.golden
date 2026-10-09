@@ -1,0 +1,20 @@
+Extent dev
+
+Usage:
+  extent version [--json]
+  extent scan [--json] [repo]
+  extent analyze [--json] [--dynamic] [repo]
+  extent plan [--json] [repo]
+  extent apply [--branch name] [--force] [--profile name] [repo]
+  extent instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--force] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]
+  extent deps [--install] [repo]
+  extent smoke --url app-url --service service-name [--prometheus url] [--tempo url] [--loki url] [--requests n] [--duration d] [--concurrency n] [--rate rps] [--json]
+  extent report --service service-name [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline|path] [--include-data] [--soak d --url app-url] [--concurrency n] [--rate rps] [--json] [repo]
+  extent baseline --service service-name [--last 30m] [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
+  extent cardinality [--prometheus url] [--json] [repo]
+  extent score [--service service-name] [--prometheus url] [--tempo url] [--loki url] [--json]
+  extent stack up [--wait=true|false] [--timeout 2m] [--project-name name] [repo]
+  extent stack down [repo]
+  extent stack status [--json] [repo]
+  extent verify [--url app-url --service service-name] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]
+  extent doctor [--url app-url --service service-name] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]

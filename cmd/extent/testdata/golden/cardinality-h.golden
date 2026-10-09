@@ -1,0 +1,7 @@
+stdout:
+stderr:
+Usage of cardinality:
+  -json
+    	print JSON output
+  -prometheus string
+    	Prometheus base URL for live label-cardinality analysis of http_server_duration_milliseconds_count

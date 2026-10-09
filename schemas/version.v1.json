@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent version --json",
+  "description": "Build metadata printed by `extent version --json`.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.version/v1"
+    },
+    "version": {
+      "type": "string"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "date": {
+      "type": "string"
+    },
+    "go": {
+      "type": "string"
+    },
+    "os": {
+      "type": "string"
+    },
+    "arch": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "version",
+    "commit",
+    "date",
+    "go",
+    "os",
+    "arch"
+  ]
+}

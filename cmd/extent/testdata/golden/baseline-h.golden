@@ -1,0 +1,15 @@
+stdout:
+stderr:
+Usage of baseline:
+  -json
+    	print JSON output
+  -last string
+    	bounded evidence lookback (default "30m")
+  -loki string
+    	Loki base URL for log evidence (default "http://localhost:3100")
+  -prometheus string
+    	Prometheus base URL (default "http://localhost:9090")
+  -service string
+    	target service.name for scoped evidence
+  -tempo string
+    	Tempo base URL for trace evidence (default "http://localhost:3200")

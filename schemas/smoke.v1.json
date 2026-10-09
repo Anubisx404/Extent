@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent smoke --json",
+  "description": "Telemetry smoke verification report.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.smoke/v1"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "targetVerified": {
+      "type": "boolean"
+    },
+    "correlationId": {
+      "type": "string"
+    },
+    "checks": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "totalRequests": {
+      "type": "integer"
+    },
+    "durationElapsed": {
+      "type": "integer"
+    },
+    "rps": {
+      "type": "number"
+    },
+    "statusDistribution": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "concurrency": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "ok",
+    "targetVerified",
+    "checks"
+  ]
+}

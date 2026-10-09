@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent plan --json",
+  "description": "Proposed observability changes for a project.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.plan/v1"
+    },
+    "root": {
+      "type": "string"
+    },
+    "detected": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "changes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "nextCommands": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "root",
+    "detected",
+    "changes",
+    "warnings",
+    "nextCommands"
+  ]
+}

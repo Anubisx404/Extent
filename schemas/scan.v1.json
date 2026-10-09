@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent scan --json",
+  "description": "Static project scan result.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.scan/v1"
+    },
+    "root": {
+      "type": "string"
+    },
+    "runtimes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "frameworks": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "packageManagers": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "databaseLibraries": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "composeFiles": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "entrypoints": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "signals": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "root",
+    "runtimes",
+    "frameworks",
+    "packageManagers",
+    "databaseLibraries",
+    "composeFiles",
+    "entrypoints",
+    "signals"
+  ]
+}

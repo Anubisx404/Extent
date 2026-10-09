@@ -1,0 +1,9 @@
+stdout:
+stderr:
+Usage of apply:
+  -branch string
+    	create or switch to a git branch before writing files
+  -force
+    	overwrite generated observability files
+  -profile string
+    	override extent.yaml profile: minimal, full, high-cardinality-safe, low-resource, report-heavy

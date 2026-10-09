@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent report --json",
+  "description": "Service performance and telemetry report.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.report/v1"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "serviceName": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "slowestPath": {
+      "type": "string"
+    },
+    "slowestPathLatency": {
+      "type": "number"
+    },
+    "dbLatency": {
+      "type": "number"
+    },
+    "dbShare": {
+      "type": "number"
+    },
+    "containerCpu": {
+      "type": "number"
+    },
+    "hostCpu": {
+      "type": "number"
+    },
+    "evidence": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "recommendations": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "comparison": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "applicationData": {},
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "measurements": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "soakResult": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "ok",
+    "serviceName",
+    "summary"
+  ]
+}

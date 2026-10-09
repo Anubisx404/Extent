@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent verify --json",
+  "description": "End-to-end telemetry verification report.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.verify/v1"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "ok",
+    "checks"
+  ]
+}

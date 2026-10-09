@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent analyze --json",
+  "description": "Application analysis: runtime, frameworks, routes and dependencies.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.analyze/v1"
+    },
+    "root": {
+      "type": "string"
+    },
+    "serviceName": {
+      "type": "string"
+    },
+    "runtime": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "frameworks": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "entrypoints": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "routes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "databaseLibraries": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "queues": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "loggers": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "externalHttpClients": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "docker": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "testCommands": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "recommendations": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "root",
+    "serviceName",
+    "runtime",
+    "frameworks",
+    "entrypoints",
+    "routes",
+    "databaseLibraries",
+    "queues",
+    "loggers",
+    "externalHttpClients",
+    "docker",
+    "testCommands",
+    "recommendations"
+  ]
+}

@@ -1,0 +1,29 @@
+stdout:
+stderr:
+Usage of report:
+  -compare string
+    	compare against a baseline file or the word baseline
+  -concurrency int
+    	concurrent synthetic request workers for soak testing (default 1)
+  -format string
+    	report format: text, markdown, html, json (default "text")
+  -include-data
+    	include raw gathered app data appendix
+  -json
+    	print JSON output
+  -last string
+    	lookback window label for report output (default "30m")
+  -loki string
+    	Loki base URL for log evidence
+  -prometheus string
+    	Prometheus base URL (default "http://localhost:9090")
+  -rate float
+    	rate limit in requests per second for soak testing; 0 means unlimited. Unset defaults to 50 with --soak, unlimited otherwise (default -1)
+  -service string
+    	target service.name for scoped evidence
+  -soak duration
+    	sustained soak duration (requires --url)
+  -tempo string
+    	Tempo base URL for trace evidence
+  -url string
+    	target application URL for soak testing

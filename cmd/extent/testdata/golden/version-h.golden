@@ -1,0 +1,5 @@
+stdout:
+stderr:
+Usage of version:
+  -json
+    	print JSON build metadata

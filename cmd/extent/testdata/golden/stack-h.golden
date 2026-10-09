@@ -1,0 +1,5 @@
+stdout:
+Usage: extent stack up [--wait=true|false] [--timeout 2m] [--project-name name] [repo]
+Usage: extent stack down [repo]
+Usage: extent stack status [--json] [repo]
+stderr:

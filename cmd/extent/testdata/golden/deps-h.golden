@@ -1,0 +1,5 @@
+stdout:
+stderr:
+Usage of deps:
+  -install
+    	run the detected package-manager install command

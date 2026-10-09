@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent score --json",
+  "description": "Observability maturity score.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.score/v1"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "coverage": {
+      "type": "number"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "dimensions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "object"
+      }
+    },
+    "suggestions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "total",
+    "coverage",
+    "summary",
+    "dimensions",
+    "suggestions"
+  ]
+}

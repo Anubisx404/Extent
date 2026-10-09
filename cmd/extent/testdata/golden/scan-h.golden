@@ -1,0 +1,5 @@
+stdout:
+stderr:
+Usage of scan:
+  -json
+    	print JSON output

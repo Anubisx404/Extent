@@ -1,0 +1,23 @@
+stdout:
+stderr:
+Usage of smoke:
+  -concurrency int
+    	concurrent synthetic request workers (default 1)
+  -duration duration
+    	sustained soak duration instead of a fixed request count
+  -json
+    	print JSON output
+  -loki string
+    	Loki base URL (default "http://localhost:3100")
+  -prometheus string
+    	Prometheus base URL (default "http://localhost:9090")
+  -rate float
+    	rate limit in requests per second; 0 means unlimited. Unset defaults to 50 with --duration, unlimited otherwise (default -1)
+  -requests int
+    	number of app requests to send (ignored with --duration) (default 3)
+  -service string
+    	target service.name for correlated trace verification
+  -tempo string
+    	Tempo base URL (default "http://localhost:3200")
+  -url string
+    	application URL to request

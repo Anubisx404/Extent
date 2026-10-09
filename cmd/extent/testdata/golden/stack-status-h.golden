@@ -1,0 +1,5 @@
+stdout:
+stderr:
+Usage of stack status:
+  -json
+    	print structured component state and health

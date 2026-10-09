@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "extent baseline --json",
+  "description": "Baseline snapshot saved to .extent/baseline.json.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "extent.baseline/v1"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "serviceName": {
+      "type": "string"
+    },
+    "measurements": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "loadProfile": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "version",
+    "capturedAt",
+    "serviceName",
+    "measurements"
+  ]
+}
