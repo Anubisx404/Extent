@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Anubisx404/Extent/internal/observability"
@@ -127,6 +128,10 @@ func Run(config Config) Report {
 		defer ticker.Stop()
 	}
 
+	// Only the first request carries the correlation traceparent. Sharing one
+	// trace ID across every synthetic request merges them into a single trace
+	// that grows with the run and exceeds the Tempo response body limit.
+	var traceparentSent atomic.Bool
 	sendOne := func() bool {
 		req, err := http.NewRequest(http.MethodGet, target.String(), nil)
 		if err != nil {
@@ -138,7 +143,9 @@ func Run(config Config) Report {
 			return false
 		}
 		req.Header.Set(config.CorrelationHeader, token)
-		req.Header.Set("traceparent", "00-"+token+"-"+token[:16]+"-01")
+		if traceparentSent.CompareAndSwap(false, true) {
+			req.Header.Set("traceparent", "00-"+token+"-"+token[:16]+"-01")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			mu.Lock()
@@ -309,6 +316,16 @@ func Run(config Config) Report {
 			}
 			check.Value = afterMetric - targetMetricBefore
 			lastMetric = afterMetric
+			if check.Value <= 0 {
+				// A restarted app resets its counters while Prometheus still holds the
+				// old series, so the summed delta can go negative. increase() over the
+				// run window handles counter resets.
+				window := int(time.Since(startTime).Seconds()) + 30
+				increaseExpression := fmt.Sprintf(`sum(increase(http_server_duration_milliseconds_count{service_name=%s}[%ds]))`, strconv.Quote(config.ServiceName), window)
+				if increase, err := queryPrometheus(client, config.PrometheusURL, increaseExpression); err == nil && increase > 0 {
+					check.Value = increase
+				}
+			}
 			if check.Value > 0 {
 				check.OK = true
 				check.Status = "passed"
@@ -502,7 +519,7 @@ func queryLokiCorrelation(client *http.Client, baseURL, service, token string) (
 			return 0, err
 		}
 		if payload.Status != "success" {
-			return 0, fmt.Errorf("Loki returned status %q", payload.Status)
+			return 0, fmt.Errorf("loki returned status %q", payload.Status)
 		}
 		if len(payload.Data.Result) > 0 {
 			return len(payload.Data.Result), nil

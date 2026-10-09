@@ -126,3 +126,25 @@ func TestRunConcurrentDurationAndStatusDistribution(t *testing.T) {
 		t.Fatalf("expected RPS > 0, got %f", report.RPS)
 	}
 }
+
+func TestRunSendsCorrelationTraceparentOnlyOnce(t *testing.T) {
+	var withTraceparent atomic.Int64
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("traceparent") != "" {
+			withTraceparent.Add(1)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer app.Close()
+
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"result":[{"value":[1,"0"]}]}}`))
+	}))
+	defer prom.Close()
+
+	Run(Config{URL: app.URL, PrometheusURL: prom.URL, Requests: 5, SettleTimeout: 10 * time.Millisecond})
+	if got := withTraceparent.Load(); got != 1 {
+		t.Fatalf("expected exactly one request to carry the correlation traceparent, got %d", got)
+	}
+}
