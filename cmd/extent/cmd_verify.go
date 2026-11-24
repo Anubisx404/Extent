@@ -3,13 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/Anubisx404/Extent/internal/config"
 	"github.com/Anubisx404/Extent/internal/verifier"
 )
 
 type verifyOptions struct {
 	JSON            bool
+	Local           bool
 	URL             string
 	Prometheus      string
 	Loki            string
@@ -25,6 +29,7 @@ type verifyOptions struct {
 func newVerifyFlagSet(command string, o *verifyOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.BoolVar(&o.JSON, "json", false, "print JSON output")
+	fs.BoolVar(&o.Local, "local", false, "skip Prometheus, Tempo, and Loki checks when --url is set")
 	fs.StringVar(&o.URL, "url", "", "application URL to request for end-to-end telemetry verification")
 	fs.StringVar(&o.Prometheus, "prometheus", "http://localhost:9090", "Prometheus base URL")
 	fs.StringVar(&o.Loki, "loki", "http://localhost:3100", "Loki base URL")
@@ -55,21 +60,30 @@ func runVerifyNamed(command string, args []string) error {
 		return err
 	}
 	root := firstArgOrDot(fs.Args())
-	if o.URL != "" && strings.TrimSpace(o.Service) == "" {
+	isNoDocker := false
+	if data, err := os.ReadFile(filepath.Join(root, "extent.yaml")); err == nil {
+		if parsed, parseErr := config.Parse(data); parseErr == nil && parsed.Profile.Name == "no-docker" {
+			isNoDocker = true
+		}
+	}
+	if !o.Local && !isNoDocker && o.URL != "" && strings.TrimSpace(o.Service) == "" {
 		return usageError(command + " requires --service when --url is set")
 	}
+	explicitTelemetry := flagWasSet(fs, "prometheus") || flagWasSet(fs, "loki") || flagWasSet(fs, "tempo")
 	report := verifier.VerifyConfig(verifier.Config{
-		Root:            root,
-		URL:             o.URL,
-		PrometheusURL:   o.Prometheus,
-		LokiURL:         o.Loki,
-		TempoURL:        o.Tempo,
-		GrafanaURL:      o.Grafana,
-		GrafanaUser:     o.GrafanaUser,
-		GrafanaPassword: o.GrafanaPassword,
-		GrafanaToken:    o.GrafanaToken,
-		ServiceName:     o.Service,
-		Requests:        o.Requests,
+		Root:              root,
+		URL:               o.URL,
+		SkipTelemetry:     o.Local,
+		ExplicitTelemetry: explicitTelemetry,
+		PrometheusURL:     o.Prometheus,
+		LokiURL:           o.Loki,
+		TempoURL:          o.Tempo,
+		GrafanaURL:        o.Grafana,
+		GrafanaUser:       o.GrafanaUser,
+		GrafanaPassword:   o.GrafanaPassword,
+		GrafanaToken:      o.GrafanaToken,
+		ServiceName:       o.Service,
+		Requests:          o.Requests,
 	})
 	if o.JSON {
 		if err := writeJSONSchema(schemaFor(command), report); err != nil {

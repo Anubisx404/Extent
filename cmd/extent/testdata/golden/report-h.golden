@@ -13,8 +13,14 @@ Usage of report:
     	print JSON output
   -last string
     	lookback window label for report output (default "30m")
+  -local
+    	run local HTTP benchmark report without Prometheus, Tempo, or Loki (requires --url)
   -loki string
     	Loki base URL for log evidence
+  -method string
+    	HTTP method for soak requests (default "GET")
+  -output string
+    	write report output to a UTF-8 file instead of stdout
   -prometheus string
     	Prometheus base URL (default "http://localhost:9090")
   -rate float
@@ -25,5 +31,7 @@ Usage of report:
     	sustained soak duration (requires --url)
   -tempo string
     	Tempo base URL for trace evidence
+  -timeout duration
+    	per-request HTTP timeout for soak requests (default 5s)
   -url string
     	target application URL for soak testing

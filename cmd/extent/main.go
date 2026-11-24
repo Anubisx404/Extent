@@ -171,16 +171,16 @@ var usageLines = []string{
 	"apply [--branch name] [--force] [--profile name] [repo]",
 	"instrument [--mode zero-code|bootstrap|deep] [--experimental] [--entrypoint path] [--force] [--dry-run|--apply|--undo] [--show-diff] [--json] [repo]",
 	"deps [--install] [repo]",
-	"smoke --url app-url --service service-name [--prometheus url] [--tempo url] [--loki url] [--requests n] [--duration d] [--concurrency n] [--rate rps] [--json]",
-	"report --service service-name [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline|path] [--include-data] [--soak d --url app-url] [--concurrency n] [--rate rps] [--json] [repo]",
-	"baseline --service service-name [--last 30m] [--prometheus url] [--loki url] [--tempo url] [--json] [repo]",
+	"smoke --url app-url [--service service-name] [--local] [--method GET] [--timeout 5s] [--prometheus url] [--tempo url] [--loki url] [--requests n] [--duration d] [--concurrency n] [--rate rps] [--json]",
+	"report [--service service-name] [--local] [--last 30m] [--format text|markdown|html|json] [--output path] [--prometheus url] [--loki url] [--tempo url] [--compare baseline|path] [--include-data] [--soak d --url app-url] [--method GET] [--timeout 5s] [--concurrency n] [--rate rps] [--json] [repo]",
+	"baseline [--service service-name] [--local] [--soak d --url app-url] [--method GET] [--timeout 5s] [--concurrency n] [--rate rps] [--last 30m] [--prometheus url] [--loki url] [--tempo url] [--json] [repo]",
 	"cardinality [--prometheus url] [--json] [repo]",
 	"score [--service service-name] [--prometheus url] [--tempo url] [--loki url] [--json]",
 	"stack up [--wait=true|false] [--timeout 2m] [--project-name name] [repo]",
 	"stack down [repo]",
 	"stack status [--json] [repo]",
-	"verify [--url app-url --service service-name] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]",
-	"doctor [--url app-url --service service-name] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]",
+	"verify [--url app-url] [--service service-name] [--local] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]",
+	"doctor [--url app-url] [--service service-name] [--local] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]",
 }
 
 // commandFlagSets maps each usage key (command, or "stack up" style subcommand)

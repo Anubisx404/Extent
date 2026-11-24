@@ -25,7 +25,7 @@ func newApplyFlagSet(o *applyOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.StringVar(&o.Branch, "branch", "", "create or switch to a git branch before writing files")
 	fs.BoolVar(&o.Force, "force", false, "overwrite generated observability files")
-	fs.StringVar(&o.Profile, "profile", "", "override extent.yaml profile: minimal, full, high-cardinality-safe, low-resource, report-heavy")
+	fs.StringVar(&o.Profile, "profile", "", "override extent.yaml profile: minimal, full, high-cardinality-safe, low-resource, report-heavy, no-docker")
 	return fs
 }
 

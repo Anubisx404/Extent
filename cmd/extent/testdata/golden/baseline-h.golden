@@ -1,15 +1,29 @@
 stdout:
 stderr:
 Usage of baseline:
+  -concurrency int
+    	concurrent synthetic request workers for baseline soak testing (default 1)
   -json
     	print JSON output
   -last string
     	bounded evidence lookback (default "30m")
+  -local
+    	capture local HTTP benchmark baseline without Prometheus, Tempo, or Loki (requires --url)
   -loki string
     	Loki base URL for log evidence (default "http://localhost:3100")
+  -method string
+    	HTTP method for baseline soak requests (default "GET")
   -prometheus string
     	Prometheus base URL (default "http://localhost:9090")
+  -rate float
+    	rate limit in requests per second for baseline soak testing; 0 means unlimited. Unset defaults to 50 with --soak, unlimited otherwise (default -1)
   -service string
     	target service.name for scoped evidence
+  -soak duration
+    	sustained soak duration to capture load profile (requires --url)
   -tempo string
     	Tempo base URL for trace evidence (default "http://localhost:3200")
+  -timeout duration
+    	per-request HTTP timeout for baseline soak requests (default 5s)
+  -url string
+    	target application URL for baseline soak testing

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 
 type smokeOptions struct {
 	URL         string
+	Method      string
+	Timeout     time.Duration
+	Local       bool
 	Prometheus  string
 	Tempo       string
 	Loki        string
@@ -26,6 +30,9 @@ type smokeOptions struct {
 func newSmokeFlagSet(o *smokeOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet("smoke", flag.ContinueOnError)
 	fs.StringVar(&o.URL, "url", "", "application URL to request")
+	fs.StringVar(&o.Method, "method", http.MethodGet, "HTTP method for synthetic requests")
+	fs.DurationVar(&o.Timeout, "timeout", 5*time.Second, "per-request HTTP timeout")
+	fs.BoolVar(&o.Local, "local", false, "run HTTP smoke/stress checks only without querying Prometheus, Tempo, or Loki")
 	fs.StringVar(&o.Prometheus, "prometheus", "http://localhost:9090", "Prometheus base URL")
 	fs.StringVar(&o.Tempo, "tempo", "http://localhost:3200", "Tempo base URL")
 	fs.StringVar(&o.Loki, "loki", "http://localhost:3100", "Loki base URL")
@@ -38,6 +45,14 @@ func newSmokeFlagSet(o *smokeOptions) *flag.FlagSet {
 	return fs
 }
 
+func validateHTTPMethod(method string) (string, error) {
+	m := strings.ToUpper(strings.TrimSpace(method))
+	if err := validateEnum("method", m, []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions}); err != nil {
+		return "", err
+	}
+	return m, nil
+}
+
 func runSmoke(args []string) error {
 	var o smokeOptions
 	fs := newSmokeFlagSet(&o)
@@ -46,6 +61,13 @@ func runSmoke(args []string) error {
 	}
 	if err := validatePositional("smoke", fs.Args(), 0); err != nil {
 		return err
+	}
+	method, err := validateHTTPMethod(o.Method)
+	if err != nil {
+		return err
+	}
+	if o.Timeout <= 0 {
+		return usageError("--timeout must be greater than zero")
 	}
 	if o.Duration <= 0 {
 		if err := validateRequests(o.Requests); err != nil {
@@ -65,19 +87,22 @@ func runSmoke(args []string) error {
 	if strings.TrimSpace(o.URL) == "" {
 		return errors.New("smoke requires --url")
 	}
-	if strings.TrimSpace(o.Service) == "" {
+	if !o.Local && strings.TrimSpace(o.Service) == "" {
 		return usageError("smoke requires --service for target-specific verification")
 	}
 	report := smoke.Run(smoke.Config{
-		URL:           o.URL,
-		PrometheusURL: o.Prometheus,
-		TempoURL:      o.Tempo,
-		LokiURL:       o.Loki,
-		ServiceName:   o.Service,
-		Requests:      o.Requests,
-		Duration:      o.Duration,
-		Concurrency:   o.Concurrency,
-		RateLimit:     rate,
+		URL:            o.URL,
+		Method:         method,
+		RequestTimeout: o.Timeout,
+		SkipTelemetry:  o.Local,
+		PrometheusURL:  o.Prometheus,
+		TempoURL:       o.Tempo,
+		LokiURL:        o.Loki,
+		ServiceName:    o.Service,
+		Requests:       o.Requests,
+		Duration:       o.Duration,
+		Concurrency:    o.Concurrency,
+		RateLimit:      rate,
 	})
 	if o.JSON {
 		if err := writeJSONSchema(schemaSmoke, report); err != nil {
@@ -106,6 +131,14 @@ func runSmoke(args []string) error {
 	}
 	if report.DurationElapsed > 0 || report.TotalRequests > 0 {
 		fmt.Printf("Throughput: %.1f RPS (%d requests in %s)\n", report.RPS, report.TotalRequests, report.DurationElapsed.Round(time.Millisecond))
+	}
+	if report.FailedRequests > 0 {
+		fmt.Printf("Failed requests: %d\n", report.FailedRequests)
+	}
+	if report.Latency != nil {
+		fmt.Printf("Latency: p50=%.1fms p95=%.1fms p99=%.1fms (min=%.1fms mean=%.1fms max=%.1fms)\n",
+			report.Latency.P50MS, report.Latency.P95MS, report.Latency.P99MS,
+			report.Latency.MinMS, report.Latency.MeanMS, report.Latency.MaxMS)
 	}
 	if !report.OK {
 		return verificationError("telemetry smoke verification failed")

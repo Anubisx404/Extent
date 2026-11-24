@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -60,12 +64,16 @@ type reportOptions struct {
 	Tempo       string
 	Service     string
 	Format      string
+	Output      string
 	Last        string
 	Compare     string
 	IncludeData bool
 	JSON        bool
+	Local       bool
 	Soak        time.Duration
 	URL         string
+	Method      string
+	Timeout     time.Duration
 	Concurrency int
 	Rate        float64
 }
@@ -77,15 +85,51 @@ func newReportFlagSet(o *reportOptions) *flag.FlagSet {
 	fs.StringVar(&o.Tempo, "tempo", "", "Tempo base URL for trace evidence")
 	fs.StringVar(&o.Service, "service", "", "target service.name for scoped evidence")
 	fs.StringVar(&o.Format, "format", "text", "report format: text, markdown, html, json")
+	fs.StringVar(&o.Output, "output", "", "write report output to a UTF-8 file instead of stdout")
 	fs.StringVar(&o.Last, "last", "30m", "lookback window label for report output")
 	fs.StringVar(&o.Compare, "compare", "", "compare against a baseline file or the word baseline")
 	fs.BoolVar(&o.IncludeData, "include-data", false, "include raw gathered app data appendix")
 	fs.BoolVar(&o.JSON, "json", false, "print JSON output")
+	fs.BoolVar(&o.Local, "local", false, "run local HTTP benchmark report without Prometheus, Tempo, or Loki (requires --url)")
 	fs.DurationVar(&o.Soak, "soak", 0, "sustained soak duration (requires --url)")
 	fs.StringVar(&o.URL, "url", "", "target application URL for soak testing")
+	fs.StringVar(&o.Method, "method", http.MethodGet, "HTTP method for soak requests")
+	fs.DurationVar(&o.Timeout, "timeout", 5*time.Second, "per-request HTTP timeout for soak requests")
 	fs.IntVar(&o.Concurrency, "concurrency", 1, "concurrent synthetic request workers for soak testing")
 	fs.Float64Var(&o.Rate, "rate", unsetRate, "rate limit in requests per second for soak testing; 0 means unlimited. Unset defaults to 50 with --soak, unlimited otherwise")
 	return fs
+}
+
+func defaultLocalServiceName(root, rawURL string) string {
+	if abs, err := filepath.Abs(root); err == nil {
+		if base := strings.TrimSpace(filepath.Base(abs)); base != "" && base != "." && base != string(filepath.Separator) {
+			return base
+		}
+	}
+	if parsed, err := url.Parse(rawURL); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return "local-service"
+}
+
+func renderReportText(report reporter.Report) string {
+	var b strings.Builder
+	b.WriteString(report.Summary + "\n")
+	if report.SoakResult != nil {
+		b.WriteString(fmt.Sprintf("Soak Performance: %.1f RPS (%d requests in %s)\n", report.SoakResult.RPS, report.SoakResult.TotalRequests, report.SoakResult.DurationElapsed.Round(time.Millisecond)))
+		if report.SoakResult.Latency != nil {
+			b.WriteString(fmt.Sprintf("Latency: p50=%.1fms p95=%.1fms p99=%.1fms (min=%.1fms mean=%.1fms max=%.1fms)\n",
+				report.SoakResult.Latency.P50MS, report.SoakResult.Latency.P95MS, report.SoakResult.Latency.P99MS,
+				report.SoakResult.Latency.MinMS, report.SoakResult.Latency.MeanMS, report.SoakResult.Latency.MaxMS))
+		}
+	}
+	if len(report.Warnings) > 0 {
+		b.WriteString("\nWarnings:\n")
+		for _, warning := range report.Warnings {
+			b.WriteString("- " + warning + "\n")
+		}
+	}
+	return b.String()
 }
 
 func runReport(args []string) error {
@@ -100,11 +144,12 @@ func runReport(args []string) error {
 	if err := validateEnum("format", o.Format, []string{"text", "markdown", "html", "json"}); err != nil {
 		return err
 	}
-	if strings.TrimSpace(o.Service) == "" {
-		return usageError("report requires --service for target-scoped evidence")
+	method, err := validateHTTPMethod(o.Method)
+	if err != nil {
+		return err
 	}
-	if o.Soak > 0 && strings.TrimSpace(o.URL) == "" {
-		return usageError("report --soak requires --url")
+	if o.Timeout <= 0 {
+		return usageError("--timeout must be greater than zero")
 	}
 	if o.Soak < 0 {
 		return usageError("--soak cannot be negative")
@@ -112,11 +157,29 @@ func runReport(args []string) error {
 	if o.Concurrency < 1 {
 		return usageError("--concurrency must be at least 1")
 	}
+	root := firstArgOrDot(fs.Args())
+	if o.Local {
+		if strings.TrimSpace(o.URL) == "" {
+			return usageError("report --local requires --url")
+		}
+		if o.Soak == 0 {
+			o.Soak = 5 * time.Second
+		}
+		if strings.TrimSpace(o.Service) == "" {
+			o.Service = defaultLocalServiceName(root, o.URL)
+		}
+	} else {
+		if strings.TrimSpace(o.Service) == "" {
+			return usageError("report requires --service for target-scoped evidence")
+		}
+		if o.Soak > 0 && strings.TrimSpace(o.URL) == "" {
+			return usageError("report --soak requires --url")
+		}
+	}
 	rate, err := resolveRate(fs, o.Rate, o.Soak)
 	if err != nil {
 		return err
 	}
-	root := firstArgOrDot(fs.Args())
 	baselinePath := ""
 	if o.Compare == "baseline" {
 		baselinePath = filepath.Join(root, ".extent", "baseline.json")
@@ -127,7 +190,7 @@ func runReport(args []string) error {
 		PrometheusURL:   o.Prometheus,
 		LokiURL:         o.Loki,
 		TempoURL:        o.Tempo,
-		IncludeEvidence: o.Loki != "" || o.Tempo != "",
+		IncludeEvidence: !o.Local && (o.Loki != "" || o.Tempo != ""),
 		BaselinePath:    baselinePath,
 		ServiceName:     o.Service,
 		Window:          o.Last,
@@ -135,43 +198,48 @@ func runReport(args []string) error {
 		TargetURL:       o.URL,
 		Concurrency:     o.Concurrency,
 		RateLimit:       rate,
+		Method:          method,
+		RequestTimeout:  o.Timeout,
+		SkipTelemetry:   o.Local,
 	})
 	if o.IncludeData {
 		report.ApplicationData = gatherApplicationData(root, baselinePath, report)
 	}
-	if o.JSON || o.Format == "json" {
-		if err := writeJSONSchema(schemaReport, report); err != nil {
+
+	var rendered string
+	switch {
+	case o.JSON || o.Format == "json":
+		if strings.TrimSpace(o.Output) == "" {
+			if err := writeJSONSchema(schemaReport, report); err != nil {
+				return err
+			}
+			if !report.OK {
+				return verificationError("report completed with warnings")
+			}
+			return nil
+		}
+		renderedBytes, err := json.MarshalIndent(struct {
+			Schema string `json:"schema"`
+			reporter.Report
+		}{Schema: schemaReport, Report: report}, "", "  ")
+		if err != nil {
 			return err
 		}
-		if !report.OK {
-			return verificationError("report completed with warnings")
-		}
-		return nil
+		rendered = string(renderedBytes) + "\n"
+	case o.Format == "markdown":
+		rendered = reporter.RenderMarkdown(report, o.Last)
+	case o.Format == "html":
+		rendered = reporter.RenderHTML(report, o.Last)
+	default:
+		rendered = renderReportText(report)
 	}
-	if o.Format == "markdown" {
-		fmt.Print(reporter.RenderMarkdown(report, o.Last))
-		if !report.OK {
-			return verificationError("report completed with warnings")
+
+	if strings.TrimSpace(o.Output) != "" {
+		if err := os.WriteFile(o.Output, []byte(rendered), 0o644); err != nil {
+			return err
 		}
-		return nil
-	}
-	if o.Format == "html" {
-		fmt.Print(reporter.RenderHTML(report, o.Last))
-		if !report.OK {
-			return verificationError("report completed with warnings")
-		}
-		return nil
-	}
-	fmt.Println(report.Summary)
-	if report.SoakResult != nil {
-		fmt.Printf("Soak Performance: %.1f RPS (%d requests in %s)\n", report.SoakResult.RPS, report.SoakResult.TotalRequests, report.SoakResult.DurationElapsed.Round(time.Millisecond))
-	}
-	if len(report.Warnings) > 0 {
-		fmt.Println()
-		fmt.Println("Warnings:")
-		for _, warning := range report.Warnings {
-			fmt.Println("-", warning)
-		}
+	} else {
+		fmt.Print(rendered)
 	}
 	if !report.OK {
 		return verificationError("report completed with warnings")

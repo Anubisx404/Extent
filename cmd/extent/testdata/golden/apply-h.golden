@@ -6,4 +6,4 @@ Usage of apply:
   -force
     	overwrite generated observability files
   -profile string
-    	override extent.yaml profile: minimal, full, high-cardinality-safe, low-resource, report-heavy
+    	override extent.yaml profile: minimal, full, high-cardinality-safe, low-resource, report-heavy, no-docker

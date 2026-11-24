@@ -359,3 +359,19 @@ func TestRunSmokeRejectsNegativeRateExplicitly(t *testing.T) {
 		t.Fatalf("error = %v, exit = %d", err, exitCode(err))
 	}
 }
+
+func TestApplyNoDockerProfileAndVerifyLocal(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"dependencies":{"express":"4.21.2"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"apply", "--profile", "no-docker", root}); err != nil {
+		t.Fatalf("apply no-docker failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docker-compose.observability.yml")); !os.IsNotExist(err) {
+		t.Fatalf("no-docker profile wrote docker-compose.observability.yml")
+	}
+	if err := run([]string{"verify", root}); err != nil {
+		t.Fatalf("verify on no-docker project failed: %v", err)
+	}
+}

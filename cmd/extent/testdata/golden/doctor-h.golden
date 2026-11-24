@@ -11,6 +11,8 @@ Usage of doctor:
     	Grafana username for basic-auth API checks
   -json
     	print JSON output
+  -local
+    	skip Prometheus, Tempo, and Loki checks when --url is set
   -loki string
     	Loki base URL (default "http://localhost:3100")
   -prometheus string

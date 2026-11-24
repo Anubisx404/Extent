@@ -7,8 +7,12 @@ Usage of smoke:
     	sustained soak duration instead of a fixed request count
   -json
     	print JSON output
+  -local
+    	run HTTP smoke/stress checks only without querying Prometheus, Tempo, or Loki
   -loki string
     	Loki base URL (default "http://localhost:3100")
+  -method string
+    	HTTP method for synthetic requests (default "GET")
   -prometheus string
     	Prometheus base URL (default "http://localhost:9090")
   -rate float
@@ -19,5 +23,7 @@ Usage of smoke:
     	target service.name for correlated trace verification
   -tempo string
     	Tempo base URL (default "http://localhost:3200")
+  -timeout duration
+    	per-request HTTP timeout (default 5s)
   -url string
     	application URL to request
