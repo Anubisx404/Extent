@@ -315,7 +315,7 @@ func (v tempoValue) String() string {
 
 func classifySpan(attrs map[string]string) string {
 	switch {
-	case attrs["db.system"] != "":
+	case attrs["db.system"] != "" || attrs["db.system.name"] != "":
 		return "database"
 	case attrs["messaging.system"] != "":
 		return "queue"
@@ -332,11 +332,11 @@ func detectDBFindings(spans []SpanEvidence) []DBFinding {
 		if span.Kind != "database" {
 			continue
 		}
-		statement := normalizeStatement(firstNonEmpty(span.Attributes["db.statement"], span.Name))
+		statement := normalizeStatement(firstNonEmpty(span.Attributes["db.statement"], span.Attributes["db.query.text"], span.Name))
 		key := span.TraceID + "|" + statement
 		finding := grouped[key]
 		finding.TraceID = span.TraceID
-		finding.System = span.Attributes["db.system"]
+		finding.System = firstNonEmpty(span.Attributes["db.system"], span.Attributes["db.system.name"])
 		finding.NormalizedStatement = statement
 		finding.RepeatCount++
 		finding.TotalDurationMS += span.DurationMS
@@ -540,10 +540,18 @@ func queryLokiQuery(client *http.Client, baseURL, query string, window time.Dura
 }
 
 func queryPrometheus(client *http.Client, baseURL, service, window string) ([]MetricSample, error) {
-	expr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=` + strconv.Quote(service) + `}[` + window + `])) by (le, http_route, route, path)))`
+	quoted := strconv.Quote(service)
+	expr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=` + quoted + `}[` + window + `])) by (le, http_route, route, path)))`
 	sample, err := prometheusFirst(client, baseURL, expr)
 	if err != nil {
 		return nil, err
+	}
+	if sample.Name == "" {
+		modernExpr := `topk(1, histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{service_name=` + quoted + `}[` + window + `])) by (le, http_route, route, path))) * 1000`
+		sample, err = prometheusFirst(client, baseURL, modernExpr)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if sample.Name == "" {
 		return nil, nil
@@ -604,8 +612,13 @@ func querySaturation(client *http.Client, baseURL, service, window string) (*Sat
 		fallbackVal, _, fallbackFound, fallbackErr := prometheusScalar(client, baseURL, fmt.Sprintf("sum(rate(http_server_duration_milliseconds_count{service_name=%s, http_status_code=\"429\"}[%s]))", serviceQuote, window))
 		if fallbackErr == nil && fallbackFound && fallbackVal > 0 {
 			rateLimit429 = fallbackVal
-		} else if err != nil && fallbackErr != nil {
-			errs = append(errs, err.Error())
+		} else {
+			modernVal, _, modernFound, modernErr := prometheusScalar(client, baseURL, fmt.Sprintf("sum(increase(http_server_request_duration_seconds_count{service_name=%s, http_response_status_code=\"429\"}[%s]))", serviceQuote, window))
+			if modernErr == nil && modernFound && modernVal > 0 {
+				rateLimit429 = modernVal
+			} else if err != nil && fallbackErr != nil && modernErr != nil {
+				errs = append(errs, err.Error())
+			}
 		}
 	}
 

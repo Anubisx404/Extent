@@ -193,3 +193,48 @@ func TestNormalizeTraceIDPadsOnlyShortHex(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectSupportsModernOTelSemconv(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/search":
+			w.Write([]byte(`{"traces":[{"traceID":"0123456789abcdef0123456789abcdef","rootServiceName":"checkout","rootTraceName":"GET /checkout","durationMs":180}]}`))
+		case "/api/traces/0123456789abcdef0123456789abcdef":
+			w.Write([]byte(`{"batches":[{"scopeSpans":[{"spans":[
+				{"traceID":"0123456789abcdef0123456789abcdef","spanID":"db1","name":"SELECT items","durationNanos":300000000,"attributes":[{"key":"db.system.name","value":{"stringValue":"postgresql"}},{"key":"db.query.text","value":{"stringValue":"SELECT * FROM items"}}]}
+			]}]}]}`))
+		case "/loki/api/v1/query_range":
+			w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+		case "/api/v1/query":
+			q := r.URL.Query().Get("query")
+			switch {
+			case strings.Contains(q, "http_server_request_duration_seconds_bucket"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{"http_route":"/checkout"},"value":[1,"120.5"]}]}}`))
+			case strings.Contains(q, "http_server_request_duration_seconds_count") && strings.Contains(q, "429"):
+				w.Write([]byte(`{"status":"success","data":{"result":[{"metric":{},"value":[1,"7"]}]}}`))
+			default:
+				w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	result := Collect(Config{PrometheusURL: server.URL, LokiURL: server.URL, TempoURL: server.URL, Window: "30m", ServiceName: "checkout"})
+	if len(result.DBFindings) != 1 || result.DBFindings[0].System != "postgresql" || result.DBFindings[0].NormalizedStatement != "select * from items" {
+		t.Fatalf("expected modern db.system.name/db.query.text finding, got %#v", result.DBFindings)
+	}
+	if result.Saturation == nil || result.Saturation.RateLimit429Count != 7 {
+		t.Fatalf("expected modern 429 count 7, got %#v", result.Saturation)
+	}
+	foundHTTP := false
+	for _, m := range result.Metrics {
+		if m.Name == "http_p95_latency" && m.Value == 120.5 && m.Unit == "milliseconds" {
+			foundHTTP = true
+		}
+	}
+	if !foundHTTP {
+		t.Fatalf("expected modern http_p95_latency metric, got %#v", result.Metrics)
+	}
+}

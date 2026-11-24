@@ -118,3 +118,32 @@ func TestAnalyzeWithUnreachablePrometheusWarnsWithoutFailing(t *testing.T) {
 		t.Fatalf("static findings lost: %#v", report.Findings)
 	}
 }
+
+func TestAnalyzeWithPrometheusFallsBackToModernOTelSeries(t *testing.T) {
+	root := t.TempDir()
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		match := r.URL.Query().Get("match[]")
+		if r.URL.Path == "/api/v1/labels" {
+			if match == SeriesSelector {
+				w.Write([]byte(`{"status":"success","data":[]}`))
+				return
+			}
+			if match == SeriesSelectorModern {
+				w.Write([]byte(`{"status":"success","data":["__name__","host_id"]}`))
+				return
+			}
+		}
+		if r.URL.Path == "/api/v1/label/host_id/values" && match == SeriesSelectorModern {
+			w.Write([]byte(`{"status":"success","data":["h1"]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer prom.Close()
+
+	report := AnalyzeWithOptions(root, Options{PrometheusURL: prom.URL})
+	if len(report.Findings) != 1 || report.Findings[0].File != "prometheus:"+SeriesSelectorModern || report.Findings[0].Label != "host_id" {
+		t.Fatalf("expected modern series fallback finding, got %#v", report.Findings)
+	}
+}

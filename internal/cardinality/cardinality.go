@@ -35,8 +35,9 @@ type Options struct {
 	PrometheusURL string
 }
 
-// SeriesSelector is the live metric whose label values are analyzed.
 const SeriesSelector = "http_server_duration_milliseconds_count"
+
+const SeriesSelectorModern = "http_server_request_duration_seconds_count"
 
 // MaxDistinctLabelValues is the distinct-value count above which a live label
 // is reported as high cardinality.
@@ -133,22 +134,27 @@ func AnalyzeWithOptions(root string, opts Options) Report {
 	return report
 }
 
-// analyzePrometheusLabels lists the labels on SeriesSelector and reports those
-// with more than MaxDistinctLabelValues distinct values or with a name that is
-// known to be unbounded.
 func analyzePrometheusLabels(baseURL string) ([]Finding, error) {
 	base, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return nil, err
 	}
 	client := observability.NewClient(5*time.Second, observability.DefaultBodyLimit)
-	match := url.Values{"match[]": {SeriesSelector}}
+	selector := SeriesSelector
+	match := url.Values{"match[]": {selector}}
 	var labels struct {
 		Status string   `json:"status"`
 		Data   []string `json:"data"`
 	}
 	if err := prometheusJSON(client, base, "/api/v1/labels", match, &labels); err != nil {
 		return nil, err
+	}
+	if len(labels.Data) == 0 {
+		selector = SeriesSelectorModern
+		match = url.Values{"match[]": {selector}}
+		if err := prometheusJSON(client, base, "/api/v1/labels", match, &labels); err != nil {
+			return nil, err
+		}
 	}
 	var findings []Finding
 	for _, name := range labels.Data {
@@ -166,13 +172,13 @@ func analyzePrometheusLabels(baseURL string) ([]Finding, error) {
 		switch {
 		case distinct > MaxDistinctLabelValues:
 			findings = append(findings, Finding{
-				File:   "prometheus:" + SeriesSelector,
+				File:   "prometheus:" + selector,
 				Label:  name,
 				Reason: fmt.Sprintf("%d distinct live values exceed %d; high-cardinality label on the live series", distinct, MaxDistinctLabelValues),
 			})
 		case unboundedLiveLabels.MatchString(name):
 			findings = append(findings, Finding{
-				File:   "prometheus:" + SeriesSelector,
+				File:   "prometheus:" + selector,
 				Label:  name,
 				Reason: fmt.Sprintf("%s is an unbounded identity label (%d distinct live values)", name, distinct),
 			})

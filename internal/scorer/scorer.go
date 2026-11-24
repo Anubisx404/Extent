@@ -66,6 +66,14 @@ func Build(config Config) Score {
 		identity = check(client, config.PrometheusURL, identityDimension,
 			fmt.Sprintf(`sum(http_server_duration_milliseconds_count{service_name=%s}) > 0`, strconv.Quote(service)),
 			"service-labeled HTTP server metrics exist for "+service)
+		if identity.Status == "missing" {
+			modernIdentity := check(client, config.PrometheusURL, identityDimension,
+				fmt.Sprintf(`sum(http_server_request_duration_seconds_count{service_name=%s}) > 0`, strconv.Quote(service)),
+				"service-labeled HTTP server metrics exist for "+service)
+			if modernIdentity.Status == "measured" {
+				identity = modernIdentity
+			}
+		}
 		correlation = correlationCheck(client, config, service)
 	}
 

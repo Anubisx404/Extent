@@ -188,3 +188,21 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestServiceIdentityFallsBackToModernOTelMetric(t *testing.T) {
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(q, "http_server_duration_milliseconds_count") {
+			w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+			return
+		}
+		w.Write([]byte(`{"status":"success","data":{"result":[{"value":[1,"1"]}]}}`))
+	}))
+	defer prom.Close()
+
+	score := Build(Config{PrometheusURL: prom.URL, ServiceName: "checkout"})
+	if score.Dimensions[5].Status != "measured" || score.Dimensions[5].Score != 100 {
+		t.Fatalf("expected modern OTel metric to satisfy service identity, got %#v", score.Dimensions[5])
+	}
+}
