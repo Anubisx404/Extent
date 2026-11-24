@@ -325,3 +325,39 @@ func containsString(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestWriteLGTMNoDockerWritesOnlyLightweightFiles(t *testing.T) {
+	root := t.TempDir()
+	plan := planner.Plan{Root: root, Detected: []string{"runtime:node"}}
+
+	written, err := WriteLGTM(root, plan, WriteOptions{Profile: "no-docker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		".env.observability",
+		".extent/plan.json",
+		".extent/report.md",
+		"extent.yaml",
+	}
+	if len(written) != len(want) {
+		t.Fatalf("written = %#v, want %#v", written, want)
+	}
+	for i := range want {
+		if filepath.ToSlash(written[i]) != want[i] {
+			t.Fatalf("written[%d] = %q, want %q", i, written[i], want[i])
+		}
+	}
+	for _, forbidden := range []string{"docker-compose.observability.yml", "otel-collector.yml", "prometheus.yml", "tempo.yml", "loki.yml"} {
+		if _, err := os.Stat(filepath.Join(root, forbidden)); !os.IsNotExist(err) {
+			t.Fatalf("no-docker profile must not write %s", forbidden)
+		}
+	}
+	env := mustRead(t, filepath.Join(root, ".env.observability"))
+	if !strings.Contains(env, "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318") {
+		t.Fatalf("expected localhost OTLP endpoint in no-docker env:\n%s", env)
+	}
+	if strings.Contains(env, "GRAFANA_ADMIN_PASSWORD") {
+		t.Fatalf("no-docker env must not include Grafana password:\n%s", env)
+	}
+}

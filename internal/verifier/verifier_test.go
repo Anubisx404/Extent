@@ -186,3 +186,40 @@ func hasCheck(report Report, name string, ok bool) bool {
 	}
 	return false
 }
+
+func TestVerifyNoDockerAutoSkipsTelemetryAndUsesConfigParse(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	noDockerRoot := t.TempDir()
+	mustWrite(t, filepath.Join(noDockerRoot, "extent.yaml"), "version: 1\nprofile:\n  name: no-docker\nservice:\n  name: api\n  port: 8080\n")
+	mustWrite(t, filepath.Join(noDockerRoot, ".env.observability"), "OTEL_SERVICE_NAME=api\n")
+
+	report := VerifyConfig(Config{Root: noDockerRoot, URL: app.URL, ServiceName: "api"})
+	if !report.OK {
+		t.Fatalf("expected no-docker verify with --url to pass without Docker, got %#v", report.Checks)
+	}
+	for _, check := range report.Checks {
+		if check.Name == "Loki ready" || check.Name == "Tempo ready" || check.Name == "docker CLI available" {
+			t.Fatalf("unexpected docker/lgtm check in no-docker mode: %#v", check)
+		}
+	}
+
+	commentOnlyRoot := t.TempDir()
+	mustWrite(t, filepath.Join(commentOnlyRoot, "extent.yaml"), "# no-docker mentioned in comment\nversion: 1\nprofile:\n  name: full\nservice:\n  name: api\n  port: 8080\n")
+	commentReport := VerifyConfig(Config{Root: commentOnlyRoot})
+	if hasCheck(commentReport, "docker-compose.observability.yml", true) {
+		t.Fatal("unexpected pass")
+	}
+	foundComposeCheck := false
+	for _, check := range commentReport.Checks {
+		if check.Name == "docker-compose.observability.yml" {
+			foundComposeCheck = true
+		}
+	}
+	if !foundComposeCheck {
+		t.Fatalf("comment mentioning no-docker should not enable no-docker mode: %#v", commentReport.Checks)
+	}
+}

@@ -114,3 +114,28 @@ func TestGeneratedGrafanaPasswordIsNotTheOldDefault(t *testing.T) {
 		t.Fatal("generated password is the default admin")
 	}
 }
+
+func TestEnvObservabilityUsesLocalhostWhenNoAppComposeAndRealServiceName(t *testing.T) {
+	hostRoot := t.TempDir()
+	hostPlan := planner.Plan{Root: hostRoot, Detected: []string{"runtime:go"}}
+	if _, err := WriteLGTM(hostRoot, hostPlan, WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	hostEnv := mustRead(t, filepath.Join(hostRoot, stack.EnvFile))
+	if !strings.Contains(hostEnv, "OTEL_SERVICE_NAME="+filepath.Base(hostRoot)) {
+		t.Fatalf("expected real service name in env:\n%s", hostEnv)
+	}
+	if !strings.Contains(hostEnv, "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318") {
+		t.Fatalf("expected localhost OTLP endpoint when no app compose exists:\n%s", hostEnv)
+	}
+
+	dockerRoot := t.TempDir()
+	dockerPlan := planner.Plan{Root: dockerRoot, Detected: []string{"runtime:go", "docker-compose:docker-compose.yml"}}
+	if _, err := WriteLGTM(dockerRoot, dockerPlan, WriteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	dockerEnv := mustRead(t, filepath.Join(dockerRoot, stack.EnvFile))
+	if !strings.Contains(dockerEnv, "OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318") {
+		t.Fatalf("expected otel-collector OTLP endpoint when app compose exists:\n%s", dockerEnv)
+	}
+}

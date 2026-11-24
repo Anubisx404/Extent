@@ -37,7 +37,34 @@ func WriteLGTM(root string, plan planner.Plan, opts WriteOptions) ([]string, err
 	return written, nil
 }
 
-// PlanLGTM renders and preflights the complete stack without mutating the project.
+func resolveServiceName(plan planner.Plan, contract string) string {
+	if strings.TrimSpace(contract) != "" {
+		if cfg, err := config.Parse([]byte(contract)); err == nil && strings.TrimSpace(cfg.Service.Name) != "" {
+			return cfg.Service.Name
+		}
+	}
+	if plan.Root != "" {
+		return filepath.Base(plan.Root)
+	}
+	return "your-service-name"
+}
+
+func hasAppDockerCompose(plan planner.Plan) bool {
+	for _, item := range plan.Detected {
+		if !strings.HasPrefix(item, "docker-compose:") {
+			continue
+		}
+		raw := strings.TrimPrefix(item, "docker-compose:")
+		for _, part := range strings.Split(raw, ",") {
+			p := strings.TrimSpace(part)
+			if p != "" && p != "docker-compose.observability.yml" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func PlanLGTM(root string, plan planner.Plan, opts WriteOptions) (fileops.Plan, error) {
 	profile := strings.ToLower(strings.TrimSpace(opts.Profile))
 	resolved, err := stack.ResolveProfile(profile)
@@ -49,23 +76,40 @@ func PlanLGTM(root string, plan planner.Plan, opts WriteOptions) (fileops.Plan, 
 	if err != nil {
 		return fileops.Plan{}, err
 	}
-	envContent, addedPassword, err := observabilityEnv(existingEnv, envExists)
-	if err != nil {
-		return fileops.Plan{}, err
-	}
-	files := map[string]string{
-		"docker-compose.observability.yml": composeYAMLForProfile(resolved),
-		"otel-collector.yml":               collectorYAMLForProfile(profile),
-		"tempo.yml":                        tempoYAML,
-		"loki.yml":                         lokiYAML,
-		"prometheus.yml":                   prometheusYAMLForProfile(resolved),
-		"prometheus-alerts.yml":            prometheusAlertsYAML,
-		"extent.yaml":                      contractOrDefault(plan, opts.Contract),
-		stack.EnvFile:                      envContent,
-		"grafana/provisioning/datasources/datasources.yml": datasourcesYAML,
-		"grafana/provisioning/dashboards/dashboards.yml":   dashboardsYAML,
-		"grafana/dashboards/service-overview.json":         dashboardJSON,
-		".extent/report.md":                                reportMarkdown(plan),
+	serviceName := resolveServiceName(plan, opts.Contract)
+	inDocker := hasAppDockerCompose(plan)
+	isNoDocker := profile == "no-docker"
+	baseEnv := renderEnvObservability(serviceName, inDocker, isNoDocker)
+
+	var files map[string]string
+	addedPassword := false
+	if isNoDocker {
+		envContent := observabilityEnvNoDocker(existingEnv, envExists, baseEnv)
+		files = map[string]string{
+			"extent.yaml":       contractOrDefault(plan, opts.Contract),
+			stack.EnvFile:       envContent,
+			".extent/report.md": reportMarkdownNoDocker(plan, serviceName),
+		}
+	} else {
+		var envContent string
+		envContent, addedPassword, err = observabilityEnv(existingEnv, envExists, baseEnv)
+		if err != nil {
+			return fileops.Plan{}, err
+		}
+		files = map[string]string{
+			"docker-compose.observability.yml": composeYAMLForProfile(resolved),
+			"otel-collector.yml":               collectorYAMLForProfile(profile),
+			"tempo.yml":                        tempoYAML,
+			"loki.yml":                         lokiYAML,
+			"prometheus.yml":                   prometheusYAMLForProfile(resolved),
+			"prometheus-alerts.yml":            prometheusAlertsYAML,
+			"extent.yaml":                      contractOrDefault(plan, opts.Contract),
+			stack.EnvFile:                      envContent,
+			"grafana/provisioning/datasources/datasources.yml": datasourcesYAML,
+			"grafana/provisioning/dashboards/dashboards.yml":   dashboardsYAML,
+			"grafana/dashboards/service-overview.json":         dashboardJSON,
+			".extent/report.md":                                reportMarkdown(plan),
+		}
 	}
 
 	planBytes, err := json.MarshalIndent(plan, "", "  ")
@@ -92,8 +136,6 @@ func PlanLGTM(root string, plan planner.Plan, opts WriteOptions) (fileops.Plan, 
 			if string(existing) == content {
 				continue
 			}
-			// Adding a generated password to an env file written by an older apply
-			// only appends a line; it never replaces what the user already set.
 			authorized := opts.Overwrite || rel == "extent.yaml" && opts.ContractOverwrite || rel == stack.EnvFile && addedPassword
 			if !authorized {
 				return fileops.Plan{}, errors.New("refusing to overwrite existing file: " + rel)
@@ -105,6 +147,31 @@ func PlanLGTM(root string, plan planner.Plan, opts WriteOptions) (fileops.Plan, 
 		steps = append(steps, fileops.Step{Path: rel, Action: action, Data: []byte(content), Mode: 0644})
 	}
 	return fileops.NewPlan(root, "stack-config", steps)
+}
+
+func reportMarkdownNoDocker(plan planner.Plan, serviceName string) string {
+	var b strings.Builder
+	b.WriteString("# Extent Report (no-docker)\n\n")
+	b.WriteString("Generated local observability contract and environment files for:\n\n")
+	for _, detected := range plan.Detected {
+		b.WriteString("- " + detected + "\n")
+	}
+	if len(plan.Warnings) > 0 {
+		b.WriteString("\n## Warnings\n\n")
+		for _, warning := range plan.Warnings {
+			b.WriteString("- " + warning + "\n")
+		}
+	}
+	b.WriteString("\n## Run Locally (No Docker)\n\n")
+	b.WriteString("```sh\n")
+	b.WriteString("extent smoke --local --url http://localhost:8080/health --duration 5s --concurrency 4\n")
+	b.WriteString("extent baseline --local --service " + serviceName + " --soak 5s --url http://localhost:8080/health .\n")
+	b.WriteString("extent report --local --service " + serviceName + " --soak 5s --url http://localhost:8080/health --compare baseline --format html --output report.html .\n")
+	b.WriteString("extent verify --url http://localhost:8080/health .\n")
+	b.WriteString("```\n\n")
+	b.WriteString("## Rollback\n\n")
+	b.WriteString("Delete the generated files or discard the observability branch.\n")
+	return b.String()
 }
 
 func reportMarkdown(plan planner.Plan) string {
@@ -130,17 +197,6 @@ func reportMarkdown(plan planner.Plan) string {
 	b.WriteString("Delete the generated files or discard the observability branch.\n")
 	return b.String()
 }
-
-// envObservabilityBase is the env file body that does not depend on generated secrets.
-const envObservability = `# For app containers on the same Docker Compose network as the observability stack.
-OTEL_SERVICE_NAME=your-service-name
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local,service.namespace=extent
-
-# For apps running directly on the host, use:
-# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-`
 
 const tempoYAML = `server:
   http_listen_port: 3200

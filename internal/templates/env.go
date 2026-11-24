@@ -14,8 +14,6 @@ const grafanaPasswordLength = 24
 
 const passwordAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
-// generateGrafanaPassword returns a uniformly random alphanumeric password.
-// Alphanumeric-only keeps the value safe in an env file and in compose interpolation.
 func generateGrafanaPassword() (string, error) {
 	max := big.NewInt(int64(len(passwordAlphabet)))
 	out := make([]byte, 0, grafanaPasswordLength)
@@ -29,18 +27,42 @@ func generateGrafanaPassword() (string, error) {
 	return string(out), nil
 }
 
-// observabilityEnv returns the content of .env.observability for a project.
-//   - No file yet: the base env block plus a freshly generated Grafana password.
-//   - File with a password: returned unchanged, so re-apply never churns it.
-//   - File without a password (written by an older apply): the password line is
-//     filled in or appended; the rest of the file is kept. addedPassword reports that.
-func observabilityEnv(existing string, exists bool) (content string, addedPassword bool, err error) {
+func renderEnvObservability(serviceName string, inDocker bool, noDocker bool) string {
+	if strings.TrimSpace(serviceName) == "" {
+		serviceName = "your-service-name"
+	}
+	if inDocker && !noDocker {
+		return "# For app containers on the same Docker Compose network as the observability stack.\n" +
+			"OTEL_SERVICE_NAME=" + serviceName + "\n" +
+			"OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318\n" +
+			"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n" +
+			"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local,service.namespace=extent\n\n" +
+			"# For apps running directly on the host, use:\n" +
+			"# OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n"
+	}
+	return "# For apps running directly on the host.\n" +
+		"OTEL_SERVICE_NAME=" + serviceName + "\n" +
+		"OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n" +
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n" +
+		"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local,service.namespace=extent\n\n" +
+		"# For app containers on the same Docker Compose network as the observability stack, use:\n" +
+		"# OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318\n"
+}
+
+func observabilityEnvNoDocker(existing string, exists bool, baseEnv string) string {
+	if !exists || strings.TrimSpace(existing) == "" {
+		return baseEnv
+	}
+	return existing
+}
+
+func observabilityEnv(existing string, exists bool, baseEnv string) (content string, addedPassword bool, err error) {
 	password, err := generateGrafanaPassword()
 	if err != nil {
 		return "", false, err
 	}
 	if !exists || strings.TrimSpace(existing) == "" {
-		return envObservability + grafanaEnvSection(password), exists, nil
+		return baseEnv + grafanaEnvSection(password), exists, nil
 	}
 	if stack.ParseEnv(existing)[stack.GrafanaPasswordKey] != "" {
 		return existing, false, nil
@@ -67,7 +89,6 @@ func grafanaEnvSection(password string) string {
 		stack.GrafanaPasswordKey + "=" + password + "\n"
 }
 
-// readOptionalFile returns the file content and whether it exists. A missing file is not an error.
 func readOptionalFile(path string) (string, bool, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {

@@ -12,27 +12,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Anubisx404/Extent/internal/config"
 	"github.com/Anubisx404/Extent/internal/observability"
 	"github.com/Anubisx404/Extent/internal/smoke"
 	"github.com/Anubisx404/Extent/internal/stack"
 )
 
 type Config struct {
-	Root          string
-	URL           string
-	PrometheusURL string
-	LokiURL       string
-	TempoURL      string
-	GrafanaURL    string
-	ServiceName   string
-	Requests      int
-	// Grafana credentials. GrafanaToken wins (Bearer); otherwise GrafanaUser and
-	// GrafanaPassword use basic auth. Unset values fall back to the
-	// EXTENT_GRAFANA_* environment variables, then to GRAFANA_ADMIN_USER and
-	// GRAFANA_ADMIN_PASSWORD in the target's .env.observability.
-	GrafanaUser     string
-	GrafanaPassword string
-	GrafanaToken    string
+	Root              string
+	URL               string
+	SkipTelemetry     bool
+	ExplicitTelemetry bool
+	PrometheusURL     string
+	LokiURL           string
+	TempoURL          string
+	GrafanaURL        string
+	ServiceName       string
+	Requests          int
+	GrafanaUser       string
+	GrafanaPassword   string
+	GrafanaToken      string
 }
 
 type Report struct {
@@ -50,14 +49,19 @@ func Verify(root string) Report {
 	return VerifyConfig(Config{Root: root})
 }
 
-func VerifyConfig(config Config) Report {
-	root := config.Root
+func VerifyConfig(cfg Config) Report {
+	root := cfg.Root
 	if root == "" {
 		root = "."
 	}
 	isNoDocker := false
 	if data, err := os.ReadFile(filepath.Join(root, "extent.yaml")); err == nil {
-		isNoDocker = strings.Contains(string(data), "no-docker")
+		if parsed, parseErr := config.Parse(data); parseErr == nil && parsed.Profile.Name == "no-docker" {
+			isNoDocker = true
+		}
+	}
+	if isNoDocker && !cfg.SkipTelemetry && !cfg.ExplicitTelemetry {
+		cfg.SkipTelemetry = true
 	}
 	var checks []Check
 	if isNoDocker {
@@ -83,11 +87,11 @@ func VerifyConfig(config Config) Report {
 			commandCheck("git", "git CLI available"),
 		}
 	}
-	if config.GrafanaURL != "" {
-		checks = append(checks, grafanaAPICorrelationCheck(config.GrafanaURL, config))
+	if cfg.GrafanaURL != "" {
+		checks = append(checks, grafanaAPICorrelationCheck(cfg.GrafanaURL, cfg))
 	}
-	if config.URL != "" {
-		checks = append(checks, stackChecks(config)...)
+	if cfg.URL != "" {
+		checks = append(checks, stackChecks(cfg)...)
 	}
 	ok := true
 	for _, check := range checks {
@@ -99,20 +103,28 @@ func VerifyConfig(config Config) Report {
 	return Report{OK: ok, Checks: checks}
 }
 
-func stackChecks(config Config) []Check {
-	if config.PrometheusURL == "" {
-		config.PrometheusURL = "http://localhost:9090"
+func stackChecks(cfg Config) []Check {
+	if cfg.PrometheusURL == "" {
+		cfg.PrometheusURL = "http://localhost:9090"
 	}
-	if config.LokiURL == "" {
-		config.LokiURL = "http://localhost:3100"
+	if cfg.LokiURL == "" {
+		cfg.LokiURL = "http://localhost:3100"
 	}
-	if config.TempoURL == "" {
-		config.TempoURL = "http://localhost:3200"
+	if cfg.TempoURL == "" {
+		cfg.TempoURL = "http://localhost:3200"
 	}
-	if config.Requests <= 0 {
-		config.Requests = 3
+	if cfg.Requests <= 0 {
+		cfg.Requests = 3
 	}
-	smokeReport := smoke.Run(smoke.Config{URL: config.URL, PrometheusURL: config.PrometheusURL, TempoURL: config.TempoURL, ServiceName: config.ServiceName, Requests: config.Requests})
+	smokeReport := smoke.Run(smoke.Config{
+		URL:           cfg.URL,
+		SkipTelemetry: cfg.SkipTelemetry,
+		PrometheusURL: cfg.PrometheusURL,
+		TempoURL:      cfg.TempoURL,
+		LokiURL:       cfg.LokiURL,
+		ServiceName:   cfg.ServiceName,
+		Requests:      cfg.Requests,
+	})
 	checks := make([]Check, 0, len(smokeReport.Checks)+2)
 	for _, evidence := range smokeReport.Checks {
 		detail := evidence.Detail
@@ -121,15 +133,15 @@ func stackChecks(config Config) []Check {
 		}
 		checks = append(checks, Check{Name: evidence.Name, OK: evidence.OK, Detail: detail})
 	}
+	if cfg.SkipTelemetry {
+		return checks
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	// Loki and Tempo can take a minute to finish joining their rings after
-	// start, so both readiness checks share one retry window.
 	deadline := time.Now().Add(readyWindow)
-	checks = append(checks, readyCheck(client, config.LokiURL, "Loki ready", deadline), readyCheck(client, config.TempoURL, "Tempo ready", deadline))
+	checks = append(checks, readyCheck(client, cfg.LokiURL, "Loki ready", deadline), readyCheck(client, cfg.TempoURL, "Tempo ready", deadline))
 	return checks
 }
 
-// readyWindow bounds how long verify waits for Loki and Tempo /ready to answer 200.
 const readyWindow = 60 * time.Second
 
 func readyCheck(client *http.Client, baseURL, name string, deadline time.Time) Check {
@@ -186,22 +198,17 @@ func grafanaCorrelationCheck(root string) Check {
 	return Check{Name: "Grafana trace/log/metric correlation", OK: true}
 }
 
-// grafanaAuthHeader builds the Authorization header for Grafana API requests.
-// Precedence: config token, config user, EXTENT_GRAFANA_TOKEN, EXTENT_GRAFANA_USER
-// (with EXTENT_GRAFANA_PASSWORD), then the credentials `extent apply` recorded
-// in the project's .env.observability. With none of these the header is left
-// empty and Grafana rejects the request; no default password is ever sent.
-func grafanaAuthHeader(config Config) http.Header {
+func grafanaAuthHeader(cfg Config) http.Header {
 	header := http.Header{}
-	if config.GrafanaToken != "" {
-		header.Set("Authorization", "Bearer "+config.GrafanaToken)
+	if cfg.GrafanaToken != "" {
+		header.Set("Authorization", "Bearer "+cfg.GrafanaToken)
 		return header
 	}
-	if token := os.Getenv("EXTENT_GRAFANA_TOKEN"); config.GrafanaUser == "" && token != "" {
+	if token := os.Getenv("EXTENT_GRAFANA_TOKEN"); cfg.GrafanaUser == "" && token != "" {
 		header.Set("Authorization", "Bearer "+token)
 		return header
 	}
-	user, password := config.GrafanaUser, config.GrafanaPassword
+	user, password := cfg.GrafanaUser, cfg.GrafanaPassword
 	if user == "" {
 		user = os.Getenv("EXTENT_GRAFANA_USER")
 		if password == "" {
@@ -209,7 +216,7 @@ func grafanaAuthHeader(config Config) http.Header {
 		}
 	}
 	if user == "" && password == "" {
-		root := config.Root
+		root := cfg.Root
 		if root == "" {
 			root = "."
 		}
@@ -222,14 +229,14 @@ func grafanaAuthHeader(config Config) http.Header {
 	return header
 }
 
-func grafanaAPICorrelationCheck(baseURL string, config Config) Check {
+func grafanaAPICorrelationCheck(baseURL string, cfg Config) Check {
 	endpoint, err := observability.ValidateURL(baseURL)
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	bounded := &observability.Client{HTTP: client, BodyLimit: observability.DefaultBodyLimit}
-	resp, err := bounded.Do(context.Background(), http.MethodGet, endpoint, "/api/datasources/uid/tempo", nil, grafanaAuthHeader(config))
+	resp, err := bounded.Do(context.Background(), http.MethodGet, endpoint, "/api/datasources/uid/tempo", nil, grafanaAuthHeader(cfg))
 	if err != nil {
 		return Check{Name: "Grafana API Tempo correlation", OK: false, Detail: err.Error()}
 	}
