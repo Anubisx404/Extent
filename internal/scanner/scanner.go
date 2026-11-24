@@ -45,6 +45,8 @@ func Scan(root string) (Result, error) {
 	databaseLibraries := map[string]bool{}
 
 	var goNetHTTPPath string
+	var pyprojectPath string
+	var pyprojectRel string
 	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -91,6 +93,9 @@ func Scan(root string) (Result, error) {
 			if base == "requirements.txt" {
 				packageManagers["pip"] = true
 				result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: rel, Value: "pip"})
+			} else if pyprojectPath == "" {
+				pyprojectPath = path
+				pyprojectRel = rel
 			}
 			result.Signals = append(result.Signals, Signal{Kind: "runtime", Path: rel, Value: "python"})
 			addTextFrameworkSignals(path, rel, frameworks, databaseLibraries, &result)
@@ -136,8 +141,12 @@ func Scan(root string) (Result, error) {
 		return Result{}, err
 	}
 
-	// Plain net/http apps have no framework manifest entry; report them as the
-	// "nethttp" recipe unless a Go router framework already explains the code.
+	if pyprojectPath != "" && !packageManagers["pip"] && !packageManagers["poetry"] && !packageManagers["uv"] {
+		pm := detectPyprojectPackageManager(pyprojectPath)
+		packageManagers[pm] = true
+		result.Signals = append(result.Signals, Signal{Kind: "package-manager", Path: pyprojectRel, Value: pm})
+	}
+
 	if goNetHTTPPath != "" && !frameworks["gin"] && !frameworks["fiber"] && !frameworks["chi"] {
 		frameworks["nethttp"] = true
 		result.Signals = append(result.Signals, Signal{Kind: "framework", Path: goNetHTTPPath, Value: "nethttp"})
@@ -169,8 +178,6 @@ func IsExcludedDir(name string) bool {
 	return false
 }
 
-// isGoNetHTTPSource reports whether a non-test Go file imports net/http and
-// registers or serves HTTP handlers with it.
 func isGoNetHTTPSource(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -197,15 +204,28 @@ func isComposeFile(name string) bool {
 
 func isLikelyEntrypoint(name string) bool {
 	switch strings.ToLower(name) {
-	case "main.go", "main.py", "app.py", "server.js", "server.ts", "index.js", "index.ts", "program.cs":
+	case "main.go", "main.py", "app.py", "manage.py", "wsgi.py", "asgi.py", "server.js", "server.ts", "index.js", "index.ts", "main.ts", "program.cs":
 		return true
 	default:
 		return false
 	}
 }
 
-// nodeFrameworkDependencies maps a package.json dependency to the framework it
-// signals.
+func detectPyprojectPackageManager(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "pip-pyproject"
+	}
+	text := strings.ToLower(string(data))
+	if strings.Contains(text, "[tool.poetry]") {
+		return "poetry"
+	}
+	if strings.Contains(text, "[tool.uv]") {
+		return "uv"
+	}
+	return "pip-pyproject"
+}
+
 var nodeFrameworkDependencies = map[string]string{
 	"express":       "express",
 	"@nestjs/core":  "nestjs",
@@ -215,8 +235,6 @@ var nodeFrameworkDependencies = map[string]string{
 	"@sveltejs/kit": "sveltekit",
 }
 
-// textFrameworkNeedles maps a lowercased text needle found in a manifest or
-// source file to the framework it signals.
 var textFrameworkNeedles = map[string]string{
 	"fastapi":                  "fastapi",
 	"django":                   "django",
@@ -228,8 +246,6 @@ var textFrameworkNeedles = map[string]string{
 	"github.com/go-chi/chi":    "chi",
 }
 
-// DetectableFrameworks returns every framework name the scanner can emit,
-// sorted. "nethttp" is emitted for plain Go net/http programs.
 func DetectableFrameworks() []string {
 	seen := map[string]bool{"nethttp": true}
 	for _, framework := range nodeFrameworkDependencies {

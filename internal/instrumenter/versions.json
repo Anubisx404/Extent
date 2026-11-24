@@ -32,6 +32,7 @@
       "opentelemetry-instrumentation": "0.64b0",
       "opentelemetry-instrumentation-fastapi": "0.64b0",
       "opentelemetry-instrumentation-flask": "0.64b0",
+      "opentelemetry-instrumentation-django": "0.64b0",
       "opentelemetry-instrumentation-logging": "0.64b0",
       "opentelemetry-instrumentation-requests": "0.64b0",
       "opentelemetry-instrumentation-sqlalchemy": "0.64b0",
@@ -65,6 +66,26 @@
       {
         "path": "go.opentelemetry.io/otel/sdk/metric",
         "version": "v1.35.0"
+      },
+      {
+        "path": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+        "version": "v0.60.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp",
+        "version": "v0.11.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/log",
+        "version": "v0.11.0"
+      },
+      {
+        "path": "go.opentelemetry.io/otel/sdk/log",
+        "version": "v0.11.0"
+      },
+      {
+        "path": "go.opentelemetry.io/contrib/bridges/otelslog",
+        "version": "v0.10.0"
       }
     ]
   }

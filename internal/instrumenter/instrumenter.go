@@ -36,8 +36,6 @@ func Instrument(root string, opts Options) (Result, error) {
 	return instrument(root, opts, fileops.Options{})
 }
 
-// instrument is Instrument with transaction options. Tests use applyOptions to
-// inject write failures; production code always passes the zero value.
 func instrument(root string, opts Options, applyOptions fileops.Options) (Result, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -145,7 +143,7 @@ func Plan(root string, opts Options) (fileops.Plan, string, error) {
 			}
 			steps = append(steps, s...)
 		}
-		if exists(filepath.Join(absRoot, "requirements.txt")) || exists(filepath.Join(absRoot, "main.py")) || exists(filepath.Join(absRoot, "app.py")) {
+		if isPythonProject(absRoot) {
 			s, e := pythonPlan(absRoot, opts)
 			if e != nil {
 				return fileops.Plan{}, "", e
@@ -222,7 +220,7 @@ func zeroCodeContent(root string) string {
 	if exists(filepath.Join(root, "package.json")) {
 		b.WriteString("NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register\n")
 	}
-	if exists(filepath.Join(root, "requirements.txt")) || exists(filepath.Join(root, "main.py")) || exists(filepath.Join(root, "app.py")) {
+	if isPythonProject(root) {
 		b.WriteString("OTEL_PYTHON_LOG_CORRELATION=true\n# Run with: opentelemetry-instrument python <entrypoint>\n")
 	}
 	if exists(filepath.Join(root, "go.mod")) {
@@ -273,8 +271,16 @@ func diffFor(path, before, after string) string {
 	return b.String()
 }
 
+func isPythonProject(root string) bool {
+	return exists(filepath.Join(root, "requirements.txt")) ||
+		exists(filepath.Join(root, "pyproject.toml")) ||
+		exists(filepath.Join(root, "main.py")) ||
+		exists(filepath.Join(root, "app.py")) ||
+		exists(filepath.Join(root, "manage.py"))
+}
+
 func supportedRoot(root string) bool {
-	return exists(filepath.Join(root, "package.json")) || exists(filepath.Join(root, "requirements.txt")) || exists(filepath.Join(root, "main.py")) || exists(filepath.Join(root, "app.py")) || exists(filepath.Join(root, "go.mod")) || isDotnetProject(root)
+	return exists(filepath.Join(root, "package.json")) || isPythonProject(root) || exists(filepath.Join(root, "go.mod")) || isDotnetProject(root)
 }
 
 func exists(path string) bool {
@@ -904,6 +910,7 @@ func dotnetBootstrap(hasEFCore bool) string {
 const dotnetBootstrapTemplate = `using System;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -924,6 +931,23 @@ namespace Microsoft.Extensions.DependencyInjection
                 ?? configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]
                 ?? "http://localhost:4318";
 
+            var traceEndpoint = otlpEndpoint.Contains(":4318") && !otlpEndpoint.EndsWith("/v1/traces")
+                ? otlpEndpoint.TrimEnd('/') + "/v1/traces"
+                : otlpEndpoint;
+            var metricEndpoint = otlpEndpoint.Contains(":4318") && !otlpEndpoint.EndsWith("/v1/metrics")
+                ? otlpEndpoint.TrimEnd('/') + "/v1/metrics"
+                : otlpEndpoint;
+            var logEndpoint = otlpEndpoint.Contains(":4318") && !otlpEndpoint.EndsWith("/v1/logs")
+                ? otlpEndpoint.TrimEnd('/') + "/v1/logs"
+                : otlpEndpoint;
+
+            services.Configure<OpenTelemetryLoggerOptions>(opts =>
+            {
+                opts.IncludeFormattedMessage = true;
+                opts.IncludeScopes = true;
+                opts.ParseStateValues = true;
+            });
+
             services.AddOpenTelemetry()
                 .ConfigureResource(resource => resource
                     .AddService(serviceName: serviceName, serviceNamespace: serviceNamespace))
@@ -933,11 +957,18 @@ namespace Microsoft.Extensions.DependencyInjection
                         .AddAspNetCoreInstrumentation(opts =>
                         {
                             opts.RecordException = true;
+                            opts.EnrichWithHttpRequest = (activity, request) =>
+                            {
+                                if (request.Headers.TryGetValue("X-Request-ID", out var reqId) && !string.IsNullOrEmpty(reqId))
+                                {
+                                    activity.SetTag("http.request.header.x_request_id", reqId.ToString());
+                                }
+                            };
                         })
                         .AddHttpClientInstrumentation()
 %s                        .AddOtlpExporter(opts =>
                         {
-                            opts.Endpoint = new Uri(otlpEndpoint);
+                            opts.Endpoint = new Uri(traceEndpoint);
                             if (otlpEndpoint.Contains(":4318"))
                             {
                                 opts.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.HttpProtobuf;
@@ -951,7 +982,19 @@ namespace Microsoft.Extensions.DependencyInjection
                         .AddHttpClientInstrumentation()
                         .AddOtlpExporter(opts =>
                         {
-                            opts.Endpoint = new Uri(otlpEndpoint);
+                            opts.Endpoint = new Uri(metricEndpoint);
+                            if (otlpEndpoint.Contains(":4318"))
+                            {
+                                opts.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.HttpProtobuf;
+                            }
+                        });
+                })
+                .WithLogging(logging =>
+                {
+                    logging
+                        .AddOtlpExporter(opts =>
+                        {
+                            opts.Endpoint = new Uri(logEndpoint);
                             if (otlpEndpoint.Contains(":4318"))
                             {
                                 opts.Protocol = OpenTelemetry.Exporter.OtlpExportProtocol.HttpProtobuf;

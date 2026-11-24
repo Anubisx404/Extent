@@ -27,16 +27,12 @@ var nodeDependencies = []string{
 	"@opentelemetry/resources",
 }
 
-// nodeESMDependencyPins and nodeESMDependencies are added only for ESM targets.
-// The ESM loader hook (hook.mjs) ships with @opentelemetry/instrumentation.
 var nodeESMDependencyPins = pins.Node.ESM
 
 var nodeESMDependencies = []string{"@opentelemetry/instrumentation"}
 
-// nodeEntrypoints are the candidate Node entrypoints, in lookup order.
-var nodeEntrypoints = []string{"server.js", "index.js", "src/server.js", "src/index.js", "server.mjs", "index.mjs", "src/server.mjs", "src/index.mjs"}
+var nodeEntrypoints = []string{"server.js", "index.js", "src/server.js", "src/index.js", "server.mjs", "index.mjs", "src/server.mjs", "src/index.mjs", "server.ts", "index.ts", "src/server.ts", "src/index.ts", "src/main.ts"}
 
-// nodeESMLoaderFlag loads the generated ESM bootstrap before the application.
 const nodeESMLoaderFlag = "--import ./extent.instrumentation.mjs"
 
 var nodeDatabaseInstrumentation = map[string][]string{
@@ -75,9 +71,6 @@ func nodePlan(root string, opts Options) ([]fileops.Step, error) {
 		source, _ = os.ReadFile(filepath.Join(root, ep))
 		sourceInstrumented = strings.Contains(string(source), marker)
 	}
-	// ESM entrypoints are loaded with `node --import`, which registers the OTel
-	// loader hook before application modules are imported. A source import would
-	// be hoisted and run too late for framework instrumentation.
 	loadedByFlag := false
 	if esm && ep != "" && !sourceInstrumented {
 		rewritten, handled := rewriteNodeStartScript(pkg, ep)
@@ -93,9 +86,19 @@ func nodePlan(root string, opts Options) ([]fileops.Step, error) {
 		}
 		steps = append(steps, fileops.Step{Path: "package.json", Action: fileops.Update, Data: out, Mode: 0644})
 	}
-	name, boot, inj := "extent.instrumentation.js", nodeCJSBootstrap, `require("./extent.instrumentation"); // extent:otel`
+	var name, boot, inj string
 	if esm {
-		name, boot, inj = "extent.instrumentation.mjs", nodeESMBootstrap, `import "./extent.instrumentation.mjs"; // extent:otel`
+		name = "extent.instrumentation.mjs"
+		boot = nodeESMBootstrap
+		inj = fmt.Sprintf(`import %q; // extent:otel`, relBootstrapImport(ep, "extent.instrumentation.mjs"))
+	} else if strings.HasSuffix(ep, ".ts") {
+		name = "extent.instrumentation.js"
+		boot = nodeCJSBootstrap
+		inj = fmt.Sprintf(`import %q; // extent:otel`, relBootstrapImport(ep, "extent.instrumentation"))
+	} else {
+		name = "extent.instrumentation.js"
+		boot = nodeCJSBootstrap
+		inj = fmt.Sprintf(`require(%q); // extent:otel`, relBootstrapImport(ep, "extent.instrumentation"))
 	}
 	if old, e := os.ReadFile(filepath.Join(root, name)); e != nil || string(old) != boot {
 		a := fileops.Create
@@ -110,8 +113,18 @@ func nodePlan(root string, opts Options) ([]fileops.Step, error) {
 	return steps, nil
 }
 
-// isESMTarget reports whether the project should get the ESM bootstrap: either
-// package.json declares "type": "module" or the entrypoint is a .mjs file.
+func relBootstrapImport(ep, target string) string {
+	dir := filepath.Dir(filepath.FromSlash(ep))
+	if dir == "." || dir == "" {
+		return "./" + target
+	}
+	rel, err := filepath.Rel(dir, ".")
+	if err != nil || rel == "." {
+		return "./" + target
+	}
+	return filepath.ToSlash(rel) + "/" + target
+}
+
 func isESMTarget(pkg *jsonObject, ep string) bool {
 	typ, _ := pkg.get("type")
 	if s, ok := typ.(string); ok && s == "module" {
@@ -120,9 +133,6 @@ func isESMTarget(pkg *jsonObject, ep string) bool {
 	return strings.HasSuffix(ep, ".mjs")
 }
 
-// rewriteNodeStartScript changes `node <ep> ...` in scripts.start to load the
-// ESM bootstrap with --import. It reports whether it changed package.json and
-// whether the start script now loads the bootstrap (already or newly).
 func rewriteNodeStartScript(pkg *jsonObject, ep string) (changed bool, handled bool) {
 	scripts := pkg.object("scripts")
 	if scripts == nil {
@@ -196,7 +206,6 @@ func addNodeDependenciesPinned(pkg *jsonObject, esm bool) bool {
 	return changed
 }
 
-// nodePinFor returns the pinned version for a dependency Extent adds.
 func nodePinFor(name string) string {
 	if version, ok := nodeDependencyPins[name]; ok {
 		return version

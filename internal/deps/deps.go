@@ -20,30 +20,28 @@ func selectCommand(managers []string) ([]string, error) {
 	for _, m := range managers {
 		set[m] = true
 	}
+	candidates := []struct {
+		key string
+		alt string
+		cmd []string
+	}{
+		{key: "pnpm", cmd: []string{"pnpm", "install"}},
+		{key: "yarn", cmd: []string{"yarn", "install"}},
+		{key: "npm", cmd: []string{"npm", "install"}},
+		{key: "pip", cmd: []string{"python", "-m", "pip", "install", "-r", "requirements.txt"}},
+		{key: "pip-pyproject", cmd: []string{"python", "-m", "pip", "install", "-e", "."}},
+		{key: "poetry", cmd: []string{"poetry", "install"}},
+		{key: "uv", cmd: []string{"uv", "sync"}},
+		{key: "go-modules", cmd: []string{"go", "mod", "tidy"}},
+		{key: "dotnet", alt: "nuget", cmd: []string{"dotnet", "restore"}},
+	}
 	var c []string
-	for _, x := range [][]string{
-		{"pnpm", "install"},
-		{"yarn", "install"},
-		{"npm", "install"},
-		{"python", "-m", "pip", "install", "-r", "requirements.txt"},
-		// `extent instrument` already writes pinned requirements into go.mod.
-		// `go mod tidy` resolves go.sum against those pins; `go get` without
-		// versions would upgrade past them and can raise the go directive.
-		{"go", "mod", "tidy"},
-		{"dotnet", "restore"},
-	} {
-		key := x[0]
-		if key == "python" {
-			key = "pip"
-		}
-		if key == "go" {
-			key = "go-modules"
-		}
-		if set[key] || (key == "dotnet" && set["nuget"]) {
+	for _, cand := range candidates {
+		if set[cand.key] || (cand.alt != "" && set[cand.alt]) {
 			if c != nil {
 				return nil, errors.New("ambiguous dependency managers")
 			}
-			c = x
+			c = cand.cmd
 		}
 	}
 	if c == nil {
