@@ -36,10 +36,89 @@ jobs:
           node-version: "20"
       - name: Verify generated project transactions
         run: python scripts/verify-generated.py
+      - name: Verify Docker-free local smoke, baseline, and report
+        shell: bash
+        run: |
+          python - <<'PY'
+          import http.server
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import threading
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  body = b'{"status":"ok"}'
+                  self.send_response(200)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def log_message(self, format, *args):
+                  return
+
+          server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+          port = server.server_address[1]
+          thread = threading.Thread(target=server.serve_forever, daemon=True)
+          thread.start()
+
+          try:
+              with tempfile.TemporaryDirectory() as tmp:
+                  tmp_path = pathlib.Path(tmp)
+                  exe_name = "extent.exe" if os.name == "nt" else "extent"
+                  extent_bin = tmp_path / exe_name
+                  repo_dir = tmp_path / "repo"
+                  repo_dir.mkdir()
+                  report_path = tmp_path / "report.html"
+                  url = f"http://127.0.0.1:{port}/health"
+
+                  subprocess.run(["go", "build", "-o", str(extent_bin), "./cmd/extent"], check=True)
+                  subprocess.run([str(extent_bin), "apply", "--profile", "no-docker", str(repo_dir)], check=True)
+                  subprocess.run([str(extent_bin), "verify", "--url", url, str(repo_dir)], check=True)
+                  subprocess.run(
+                      [str(extent_bin), "smoke", "--local", "--url", url, "--duration", "1s", "--concurrency", "2", "--json"],
+                      check=True,
+                  )
+                  subprocess.run(
+                      [str(extent_bin), "baseline", "--local", "--soak", "1s", "--url", url, "--concurrency", "2", "--json", str(repo_dir)],
+                      check=True,
+                  )
+                  subprocess.run(
+                      [
+                          str(extent_bin),
+                          "report",
+                          "--local",
+                          "--soak",
+                          "1s",
+                          "--url",
+                          url,
+                          "--concurrency",
+                          "2",
+                          "--compare",
+                          "baseline",
+                          "--format",
+                          "html",
+                          "--output",
+                          str(report_path),
+                          str(repo_dir),
+                      ],
+                      check=True,
+                  )
+
+                  if not (repo_dir / ".extent" / "baseline.json").is_file():
+                      raise RuntimeError("baseline.json was not created")
+                  if not report_path.is_file() or report_path.stat().st_size == 0:
+                      raise RuntimeError("report.html was not created or is empty")
+          finally:
+              server.shutdown()
+              server.server_close()
+          PY
 
   live-lgtm:
     name: Live LGTM Stack Acceptance
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -48,43 +127,14 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: true
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a
+        with:
+          node-version: "20"
       - name: Build Extent CLI
         run: go build -o bin/extent ./cmd/extent
-      - name: Create temporary target and generate stack
+      - name: Run live LGTM E2E suite
         shell: bash
-        run: |
-          TARGET_DIR="$(mktemp -d)"
-          echo "TARGET_DIR=${TARGET_DIR}" >> "$GITHUB_ENV"
-          cp -r baseline_test/node-express/* "${TARGET_DIR}"
-          ./bin/extent scan "${TARGET_DIR}"
-          ./bin/extent plan "${TARGET_DIR}"
-          ./bin/extent apply --force "${TARGET_DIR}"
-          ./bin/extent instrument --mode bootstrap --apply "${TARGET_DIR}"
-          ./bin/extent verify "${TARGET_DIR}"
-      - name: Validate Compose static syntax
-        shell: bash
-        run: |
-          docker compose -f "${TARGET_DIR}/docker-compose.observability.yml" config --quiet
-      - name: Docker preflight and stack startup
-        shell: bash
-        run: |
-          docker --version
-          docker compose version
-          docker info
-          ./bin/extent stack up --wait "${TARGET_DIR}"
-          ./bin/extent stack status "${TARGET_DIR}"
-      - name: Service telemetry validation preflight
-        shell: bash
-        run: |
-          echo "Observability stack is active and healthy."
-          echo "Telemetry verification note: target service runtime fixture is not running in background container; live trace/metric smoke tests require active service."
-      - name: Teardown temporary stack
-        if: always()
-        shell: bash
-        run: |
-          if [ -n "${TARGET_DIR:-}" ] && [ -d "${TARGET_DIR}" ]; then
-            if [ -f "${TARGET_DIR}/docker-compose.observability.yml" ]; then
-              ./bin/extent stack down "${TARGET_DIR}" || docker compose -f "${TARGET_DIR}/docker-compose.observability.yml" down -v || true
-            fi
-            rm -rf "${TARGET_DIR}"
-          fi
+        run: bash scripts/e2e-live-lgtm.sh ./bin/extent

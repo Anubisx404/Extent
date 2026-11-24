@@ -27,7 +27,7 @@ Modes:
 | Node.js | Fastify (`fastify`) | stable | stable | experimental | |
 | Python | Flask (`flask`) | stable | stable | experimental | Import added to `app.py` or `main.py`. |
 | Python | FastAPI (`fastapi`) | stable | stable | experimental | Install dependencies into a virtualenv first. |
-| Python | Django (`django`) | stable | stable | experimental | |
+| Python | Django (`django`) | stable | stable | experimental | `manage.py` and `wsgi.py` with `DjangoInstrumentor`. |
 | Go | net/http (`nethttp`) | stable | stable | detection-only | See Go notes. |
 | Go | Gin (`gin`) | stable | stable | detection-only | See Go notes. |
 | Go | Fiber (`fiber`) | stable | stable | detection-only | See Go notes. |
@@ -52,24 +52,26 @@ detection-only in practice.
 - **ESM** projects (`"type": "module"`): Extent rewrites the `start` script to
   `node --import ./extent.instrumentation.mjs ...`. Run the project with
   `npm start`, not by calling the entrypoint directly.
+- **TypeScript** entrypoints (`server.ts`, `index.ts`, `src/server.ts`, `src/index.ts`, `src/main.ts`) are detected and supported in bootstrap mode.
 - Traces, metrics, logs, and request correlation are set up for HTTP. Supported
   database clients are auto-instrumented.
 
 ### Python
 
 - Flask and FastAPI get a generated `extent_instrumentation` import at the top of the entrypoint.
+- **Django** projects get `extent_instrumentation` wired into `manage.py` and `wsgi.py`, enabling `DjangoInstrumentor` auto-instrumentation.
+- Dependency detection and injection support `requirements.txt` as well as `pyproject.toml` (PEP 621 and Poetry). `extent deps` supports `pip`, `uv`, and `poetry`.
 - Install dependencies into a virtualenv before running `instrument --apply`.
 
 ### Go
 
-- Bootstrap sets up the trace and metric providers and flushes them on SIGINT and SIGTERM.
-- HTTP server spans need OpenTelemetry `otelhttp` wrapping or framework
-  instrumentation in your application. The bootstrap does not wrap your handlers.
+- Bootstrap sets up the trace, metric, and log (`slog` OTLP log bridge) providers and flushes them on SIGINT and SIGTERM.
+- For `net/http`, bootstrap auto-wraps `http.ListenAndServe` handlers with `otelhttp` (`WrapHandler`) to emit HTTP server spans; custom routers or frameworks can also use `otelhttp` or framework middleware.
 - `log.Fatal` exits without the shutdown flush. Return errors from `main` if you want the last spans exported.
 
 ### .NET
 
-- Bootstrap adds `ExtentObservabilityExtensions.cs`, OpenTelemetry package references, and a registration in `Program.cs` or `Startup.cs`.
+- Bootstrap adds `ExtentObservabilityExtensions.cs`, OpenTelemetry package references, and a registration in `Program.cs` or `Startup.cs` configuring traces, metrics, and OTLP logging (`WithLogging` / `AddOtlpExporter`).
 - Zero-code writes only a comment pointing to OpenTelemetry auto-instrumentation.
 
 ### Deep mode (experimental, all runtimes)

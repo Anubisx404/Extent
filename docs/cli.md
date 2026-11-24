@@ -91,7 +91,9 @@ Writes the generated observability files and `extent.yaml` into the repo. See
 - `--force`: overwrite generated observability files (default: off). Extent-owned
   files you have edited are still refused. See [troubleshooting](troubleshooting.md).
 - `--profile`: override the `extent.yaml` profile. One of `minimal`, `full`,
-  `high-cardinality-safe`, `low-resource`, `report-heavy`.
+  `high-cardinality-safe`, `low-resource`, `report-heavy`, `no-docker`.
+  `no-docker` writes only `extent.yaml`, `.env.observability`, `.extent/plan.json`,
+  and `.extent/report.md` (with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`).
 
 `apply` has no `--json` flag.
 
@@ -136,14 +138,16 @@ that command in the repo.
 ## smoke
 
 ```text
-extent smoke --url app-url --service service-name [--prometheus url] [--tempo url] [--loki url] [--requests n] [--duration d] [--concurrency n] [--rate rps] [--json]
+extent smoke --url app-url [--service service-name] [--local] [--method GET] [--timeout 5s] [--prometheus url] [--tempo url] [--loki url] [--requests n] [--duration d] [--concurrency n] [--rate rps] [--json]
 ```
 
-Sends synthetic requests to your app, then checks that the service's telemetry
-reached Prometheus, Tempo, and Loki. Required: `--url` and `--service`.
+Sends synthetic requests to your app, collects client-side latency percentiles (`p50`, `p95`, `p99`), and (unless `--local` is set) checks that the service's telemetry reached Prometheus, Tempo, and Loki. Required: `--url` (and `--service` unless `--local` is set).
 
 - `--url`: application URL to request (required).
-- `--service`: target `service.name` for correlated trace verification (required).
+- `--service`: target `service.name` for correlated trace verification (required unless `--local` is set).
+- `--local`: run HTTP smoke/stress and latency checks only without querying Prometheus, Tempo, or Loki (default: off).
+- `--method`: HTTP method for synthetic requests (default `GET`).
+- `--timeout`: per-request HTTP timeout (default `5s`).
 - `--prometheus`: Prometheus base URL (default `http://localhost:9090`).
 - `--tempo`: Tempo base URL (default `http://localhost:3200`).
 - `--loki`: Loki base URL (default `http://localhost:3100`).
@@ -157,15 +161,17 @@ reached Prometheus, Tempo, and Loki. Required: `--url` and `--service`.
 ## report
 
 ```text
-extent report --service service-name [--soak d --url app-url] [--concurrency n] [--rate rps] [--last 30m] [--format text|markdown|html|json] [--prometheus url] [--loki url] [--tempo url] [--compare baseline|path] [--include-data] [--json] [repo]
+extent report [--service service-name] [--local] [--last 30m] [--format text|markdown|html|json] [--output path] [--prometheus url] [--loki url] [--tempo url] [--compare baseline|path] [--include-data] [--soak d --url app-url] [--method GET] [--timeout 5s] [--concurrency n] [--rate rps] [--json] [repo]
 ```
 
-Builds a bottleneck report from Prometheus, with optional Loki and Tempo evidence.
-Required: `--service`. `--soak` also requires `--url`.
+Builds a bottleneck or local HTTP benchmark report from Prometheus (with optional Loki/Tempo evidence) or directly from `--local --url` soak testing.
+Required: `--service` (unless `--local` is set, which defaults to the repo name and requires `--url`). `--soak` also requires `--url`.
 
-- `--service`: target `service.name` for scoped evidence (required).
+- `--service`: target `service.name` for scoped evidence (required unless `--local` is set).
+- `--local`: run local HTTP benchmark report without Prometheus, Tempo, or Loki (requires `--url`; defaults `--soak` to `5s` if unset).
 - `--last`: lookback window label (default `30m`).
 - `--format`: `text`, `markdown`, `html`, or `json` (default `text`).
+- `--output`: write report output to a UTF-8 file instead of stdout (default: none).
 - `--prometheus`: Prometheus base URL (default `http://localhost:9090`).
 - `--loki`: Loki base URL for log evidence (default: none).
 - `--tempo`: Tempo base URL for trace evidence (default: none).
@@ -183,11 +189,11 @@ A report with warnings exits 5.
 ## baseline
 
 ```text
-extent baseline --service service-name [--last 30m] [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
+extent baseline [--service service-name] [--local] [--soak d --url app-url] [--method GET] [--timeout 5s] [--concurrency n] [--rate rps] [--last 30m] [--prometheus url] [--loki url] [--tempo url] [--json] [repo]
 ```
 
-Captures the current evidence as a snapshot at `.extent/baseline.json`, for later
-`report --compare baseline`. Required: `--service`.
+Captures the current evidence (and optional soak load profile) as a snapshot at `.extent/baseline.json`, for later
+`report --compare baseline`. Required: `--service` (unless `--local` is set, which requires `--url` and defaults `--soak` to `5s`).
 
 - `--service`: target `service.name` for scoped evidence (required).
 - `--last`: bounded evidence lookback (default `30m`).
@@ -272,12 +278,12 @@ Lists each component's state and health.
 ## verify
 
 ```text
-extent verify [--url app-url --service service-name] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]
+extent verify [--url app-url] [--service service-name] [--local] [--prometheus url] [--loki url] [--tempo url] [--grafana url] [--grafana-user user] [--grafana-password pass] [--grafana-token token] [--requests n] [--json] [repo]
 ```
 
 Checks the generated files and, when given, live endpoints. Without `--url` it
 checks files and tool readiness only. With `--url` it sends synthetic requests
-and checks correlated telemetry. `--url` requires `--service`.
+and checks correlated telemetry (or HTTP-only checks when `--local` or `profile: no-docker` is used). `--url` requires `--service` unless `--local` or `no-docker` is active.
 
 - `--url`: application URL to request for end-to-end checks (default: none).
 - `--service`: target `service.name` for correlated checks (default: none; required with `--url`).

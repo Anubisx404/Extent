@@ -160,6 +160,18 @@ extent instrument --undo $REPO
 
 If a step fails, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
+## Running without Docker
+
+If your project does not use Docker (or you want fast local HTTP smoke/stress benchmarking without starting the LGTM stack), use the `no-docker` profile and `--local` flags:
+
+```sh
+extent apply --profile no-docker "$REPO"
+extent verify --url http://localhost:8080/health "$REPO"
+extent smoke --local --url http://localhost:8080/health --duration 5s --concurrency 4
+extent baseline --local --soak 5s --url http://localhost:8080/health --concurrency 4 "$REPO"
+extent report --local --soak 5s --url http://localhost:8080/health --concurrency 4 --compare baseline --format html --output report.html "$REPO"
+```
+
 ## Support
 
 A summary. The full table, with per-mode status and runtime notes, is in
@@ -169,10 +181,16 @@ A summary. The full table, with per-mode status and runtime notes, is in
 | --- | --- | --- | --- |
 | Node.js | Express, NestJS, Next.js, Fastify | stable | experimental |
 | Python | Flask, FastAPI, Django | stable | experimental |
-| Go | net/http, Gin, Fiber | stable (HTTP spans need `otelhttp` or framework instrumentation) | detection-only |
+| Go | net/http, Gin, Fiber | stable (`otelhttp` `WrapHandler` auto-wraps `http.ListenAndServe`; `slog` OTLP log bridge) | detection-only |
 | .NET | ASP.NET Core (with EF Core) | stable | experimental |
 | Java | Spring Boot | detection-only | detection-only |
 | Svelte | Svelte, SvelteKit | detection-only | detection-only |
+
+Runtime highlights:
+- **Node.js:** Supports CommonJS, ESM, and TypeScript entrypoints (`server.ts`, `index.ts`, `src/server.ts`, `src/index.ts`, `src/main.ts`).
+- **Python:** Supports `requirements.txt` and `pyproject.toml` (PEP 621 & Poetry), `uv` / `poetry` in `extent deps`, and Django (`manage.py`, `wsgi.py`, `DjangoInstrumentor`).
+- **Go:** Bootstrap auto-wraps `http.ListenAndServe` with `otelhttp` `WrapHandler` and configures the `slog` OTLP log bridge.
+- **.NET:** Bootstrap configures traces, metrics, and OTLP logging (`WithLogging` / `AddOtlpExporter`).
 
 Deep mode needs `--experimental` and is outside the stable support contract.
 

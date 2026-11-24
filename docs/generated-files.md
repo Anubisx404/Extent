@@ -53,7 +53,9 @@ if you change it later.
 
 The profile is set by `extent apply --profile` or the `profile.name` field in
 `extent.yaml`. Accepted values are `minimal`, `full` (default), `high-cardinality-safe`,
-`low-resource`, and `report-heavy`. The profile changes the generated
+`low-resource`, `report-heavy`, and `no-docker`. `no-docker` writes only `extent.yaml`,
+`.env.observability` (configured for `http://localhost:4318`), `.extent/plan.json`, and
+`.extent/report.md` without Docker Compose or LGTM config files. The other profiles change the generated
 Collector only:
 
 | Profile | Collector change |
