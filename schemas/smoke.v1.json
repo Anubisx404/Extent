@@ -28,6 +28,9 @@
     "totalRequests": {
       "type": "integer"
     },
+    "failedRequests": {
+      "type": "integer"
+    },
     "durationElapsed": {
       "type": "integer"
     },
@@ -42,6 +45,12 @@
     },
     "concurrency": {
       "type": "integer"
+    },
+    "latency": {
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "required": [

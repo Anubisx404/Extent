@@ -9,9 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	mathrand "math/rand/v2"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +25,9 @@ import (
 
 type Config struct {
 	URL               string
+	Method            string
+	RequestTimeout    time.Duration
+	SkipTelemetry     bool
 	PrometheusURL     string
 	TempoURL          string
 	LokiURL           string
@@ -35,16 +42,27 @@ type Config struct {
 	RateLimit         float64
 }
 
+type LatencyStats struct {
+	MinMS  float64 `json:"minMs"`
+	MeanMS float64 `json:"meanMs"`
+	P50MS  float64 `json:"p50Ms"`
+	P95MS  float64 `json:"p95Ms"`
+	P99MS  float64 `json:"p99Ms"`
+	MaxMS  float64 `json:"maxMs"`
+}
+
 type Report struct {
 	OK                 bool          `json:"ok"`
 	TargetVerified     bool          `json:"targetVerified"`
 	CorrelationID      string        `json:"correlationId,omitempty"`
 	Checks             []Check       `json:"checks"`
 	TotalRequests      int           `json:"totalRequests,omitempty"`
+	FailedRequests     int           `json:"failedRequests,omitempty"`
 	DurationElapsed    time.Duration `json:"durationElapsed,omitempty"`
 	RPS                float64       `json:"rps,omitempty"`
 	StatusDistribution map[int]int   `json:"statusDistribution,omitempty"`
 	Concurrency        int           `json:"concurrency,omitempty"`
+	Latency            *LatencyStats `json:"latency,omitempty"`
 }
 
 type Check struct {
@@ -56,7 +74,21 @@ type Check struct {
 	Detail string  `json:"detail,omitempty"`
 }
 
+const maxLatencySamples = 100000
+
 func Run(config Config) Report {
+	method := strings.ToUpper(strings.TrimSpace(config.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	switch method {
+	case http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodOptions:
+	default:
+		return Report{OK: false, Checks: []Check{{Name: "configuration", Status: "failed", Detail: "unsupported HTTP method: " + method}}}
+	}
+	if config.RequestTimeout <= 0 {
+		config.RequestTimeout = 5 * time.Second
+	}
 	if config.PrometheusURL == "" {
 		config.PrometheusURL = "http://localhost:9090"
 	}
@@ -90,7 +122,17 @@ func Run(config Config) Report {
 		return Report{OK: false, Checks: []Check{{Name: "correlation token", OK: false, Detail: err.Error()}}}
 	}
 	token := hex.EncodeToString(tokenBytes[:])
-	client := &http.Client{Timeout: 5 * time.Second}
+
+	maxConns := max(config.Concurrency*2, 16)
+	transport := &http.Transport{
+		MaxIdleConns:        maxConns,
+		MaxIdleConnsPerHost: maxConns,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
+	targetClient := &http.Client{Timeout: config.RequestTimeout, Transport: transport}
+	obsClient := &http.Client{Timeout: 5 * time.Second}
+
 	queries := []struct {
 		name string
 		expr string
@@ -101,62 +143,82 @@ func Run(config Config) Report {
 	}
 	before := make(map[string]float64, len(queries))
 	beforeErr := make(map[string]error, len(queries))
-	for _, query := range queries {
-		before[query.name], beforeErr[query.name] = queryPrometheus(client, config.PrometheusURL, query.expr)
-	}
 	targetMetricExpression := ""
 	targetMetricBefore := 0.0
 	var targetMetricBeforeErr error
-	if config.ServiceName != "" {
-		targetMetricExpression = fmt.Sprintf(`sum(http_server_duration_milliseconds_count{service_name=%s})`, strconv.Quote(config.ServiceName))
-		targetMetricBefore, targetMetricBeforeErr = queryPrometheus(client, config.PrometheusURL, targetMetricExpression)
-	}
-	checks := []Check{}
+	targetMetricModernExpression := ""
+	targetMetricModernBefore := 0.0
+	var targetMetricModernBeforeErr error
 
+	if !config.SkipTelemetry {
+		for _, query := range queries {
+			before[query.name], beforeErr[query.name] = queryPrometheus(obsClient, config.PrometheusURL, query.expr)
+		}
+		if config.ServiceName != "" {
+			quotedService := strconv.Quote(config.ServiceName)
+			targetMetricExpression = fmt.Sprintf(`sum(http_server_duration_milliseconds_count{service_name=%s})`, quotedService)
+			targetMetricBefore, targetMetricBeforeErr = queryPrometheus(obsClient, config.PrometheusURL, targetMetricExpression)
+			targetMetricModernExpression = fmt.Sprintf(`sum(http_server_request_duration_seconds_count{service_name=%s})`, quotedService)
+			targetMetricModernBefore, targetMetricModernBeforeErr = queryPrometheus(obsClient, config.PrometheusURL, targetMetricModernExpression)
+		}
+	}
+
+	checks := []Check{}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	statusDist := make(map[int]int)
 	totalRequests := 0
+	failedRequests := 0
 	var firstReqErr error
 	unexpectedStatusCount := 0
+	samples := make([]float64, 0, 256)
+	sampleCount := 0
+	minMS := math.MaxFloat64
+	maxMS := 0.0
+	sumMS := 0.0
 
 	startTime := time.Now()
 
 	var ticker *time.Ticker
 	if config.RateLimit > 0 {
-		ticker = time.NewTicker(time.Duration(float64(time.Second) / config.RateLimit))
+		interval := time.Duration(float64(time.Second) / config.RateLimit)
+		if interval < time.Microsecond {
+			interval = time.Microsecond
+		}
+		ticker = time.NewTicker(interval)
 		defer ticker.Stop()
 	}
 
-	// Only the first request carries the correlation traceparent. Sharing one
-	// trace ID across every synthetic request merges them into a single trace
-	// that grows with the run and exceeds the Tempo response body limit.
 	var traceparentSent atomic.Bool
-	sendOne := func() bool {
-		req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+	sendOne := func() {
+		req, err := http.NewRequest(method, target.String(), nil)
 		if err != nil {
 			mu.Lock()
+			failedRequests++
 			if firstReqErr == nil {
 				firstReqErr = err
 			}
 			mu.Unlock()
-			return false
+			return
 		}
 		req.Header.Set(config.CorrelationHeader, token)
 		if traceparentSent.CompareAndSwap(false, true) {
 			req.Header.Set("traceparent", "00-"+token+"-"+token[:16]+"-01")
 		}
-		resp, err := client.Do(req)
+		reqStart := time.Now()
+		resp, err := targetClient.Do(req)
 		if err != nil {
 			mu.Lock()
+			failedRequests++
 			if firstReqErr == nil {
 				firstReqErr = err
 			}
 			mu.Unlock()
-			return false
+			return
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
+		latencyMS := float64(time.Since(reqStart).Nanoseconds()) / 1e6
 
 		mu.Lock()
 		totalRequests++
@@ -164,8 +226,23 @@ func Run(config Config) Report {
 		if resp.StatusCode < config.ExpectedMin || resp.StatusCode > config.ExpectedMax {
 			unexpectedStatusCount++
 		}
+		sampleCount++
+		sumMS += latencyMS
+		if latencyMS < minMS {
+			minMS = latencyMS
+		}
+		if latencyMS > maxMS {
+			maxMS = latencyMS
+		}
+		if len(samples) < maxLatencySamples {
+			samples = append(samples, latencyMS)
+		} else {
+			idx := mathrand.IntN(sampleCount)
+			if idx < maxLatencySamples {
+				samples[idx] = latencyMS
+			}
+		}
 		mu.Unlock()
-		return true
 	}
 
 	if config.Duration > 0 {
@@ -189,9 +266,7 @@ func Run(config Config) Report {
 						case <-ticker.C:
 						}
 					}
-					if !sendOne() && firstReqErr != nil {
-						return
-					}
+					sendOne()
 				}
 			}()
 		}
@@ -211,9 +286,7 @@ func Run(config Config) Report {
 					if ticker != nil {
 						<-ticker.C
 					}
-					if !sendOne() && firstReqErr != nil {
-						return
-					}
+					sendOne()
 				}
 			}()
 		}
@@ -225,18 +298,21 @@ func Run(config Config) Report {
 	if durationElapsed.Seconds() > 0 {
 		rps = float64(totalRequests) / durationElapsed.Seconds()
 	}
+	latencyStats := computeLatencyStats(samples, sampleCount, minMS, maxMS, sumMS)
 
 	if totalRequests == 0 && firstReqErr != nil {
 		return Report{
 			OK:                 false,
 			TargetVerified:     false,
 			CorrelationID:      token,
-			Checks:             []Check{{Name: "app request", OK: false, Detail: firstReqErr.Error()}},
+			Checks:             []Check{{Name: "app request", OK: false, Scope: "target", Status: "failed", Detail: firstReqErr.Error()}},
 			TotalRequests:      totalRequests,
+			FailedRequests:     failedRequests,
 			DurationElapsed:    durationElapsed,
 			RPS:                rps,
 			StatusDistribution: statusDist,
 			Concurrency:        config.Concurrency,
+			Latency:            latencyStats,
 		}
 	}
 
@@ -259,25 +335,64 @@ func Run(config Config) Report {
 			Detail: fmt.Sprintf("%d request(s) returned %d-%d", totalRequests, config.ExpectedMin, config.ExpectedMax),
 		})
 	}
-	if firstReqErr != nil {
-		checks = append(checks, Check{Name: "app request", OK: false, Status: "failed", Scope: "target", Detail: firstReqErr.Error()})
+	if failedRequests > 0 && firstReqErr != nil {
+		checks = append(checks, Check{
+			Name:   "app request",
+			OK:     false,
+			Status: "failed",
+			Scope:  "target",
+			Value:  float64(failedRequests),
+			Detail: fmt.Sprintf("%d request(s) failed (first error: %s)", failedRequests, firstReqErr.Error()),
+		})
 	}
 
-	after := make(map[string]float64, len(queries))
-	afterErr := make(map[string]error, len(queries))
-	deadline := time.Now().Add(config.SettleTimeout)
-	for {
-		allPositive := true
-		for _, query := range queries {
-			after[query.name], afterErr[query.name] = queryPrometheus(client, config.PrometheusURL, query.expr)
-			if afterErr[query.name] != nil || after[query.name]-before[query.name] <= 0 {
-				allPositive = false
+	if config.SkipTelemetry {
+		ok := true
+		for _, check := range checks {
+			if check.Scope == "target" && !check.OK {
+				ok = false
+				break
 			}
 		}
-		if allPositive || !time.Now().Before(deadline) {
+		return Report{
+			OK:                 ok,
+			TargetVerified:     ok,
+			CorrelationID:      token,
+			Checks:             checks,
+			TotalRequests:      totalRequests,
+			FailedRequests:     failedRequests,
+			DurationElapsed:    durationElapsed,
+			RPS:                rps,
+			StatusDistribution: statusDist,
+			Concurrency:        config.Concurrency,
+			Latency:            latencyStats,
+		}
+	}
+
+	allBeforeFailed := true
+	for _, query := range queries {
+		if beforeErr[query.name] == nil {
+			allBeforeFailed = false
 			break
 		}
-		time.Sleep(250 * time.Millisecond)
+	}
+	after := make(map[string]float64, len(queries))
+	afterErr := make(map[string]error, len(queries))
+	if !allBeforeFailed {
+		deadline := time.Now().Add(config.SettleTimeout)
+		for {
+			allPositive := true
+			for _, query := range queries {
+				after[query.name], afterErr[query.name] = queryPrometheus(obsClient, config.PrometheusURL, query.expr)
+				if afterErr[query.name] != nil || after[query.name]-before[query.name] <= 0 {
+					allPositive = false
+				}
+			}
+			if allPositive || !time.Now().Before(deadline) {
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 	for _, query := range queries {
 		check := Check{Name: query.name, Scope: "global", Status: "unavailable"}
@@ -302,13 +417,14 @@ func Run(config Config) Report {
 		check := Check{Name: "target service metrics", Scope: "target", Status: "missing"}
 		metricDeadline := time.Now().Add(config.SettleTimeout)
 		lastMetric := targetMetricBefore
+		quotedService := strconv.Quote(config.ServiceName)
 		for {
-			afterMetric, afterMetricErr := queryPrometheus(client, config.PrometheusURL, targetMetricExpression)
 			if targetMetricBeforeErr != nil {
 				check.Status = "unavailable"
 				check.Detail = "before query failed: " + targetMetricBeforeErr.Error()
 				break
 			}
+			afterMetric, afterMetricErr := queryPrometheus(obsClient, config.PrometheusURL, targetMetricExpression)
 			if afterMetricErr != nil {
 				check.Status = "unavailable"
 				check.Detail = "after query failed: " + afterMetricErr.Error()
@@ -317,13 +433,24 @@ func Run(config Config) Report {
 			check.Value = afterMetric - targetMetricBefore
 			lastMetric = afterMetric
 			if check.Value <= 0 {
-				// A restarted app resets its counters while Prometheus still holds the
-				// old series, so the summed delta can go negative. increase() over the
-				// run window handles counter resets.
 				window := int(time.Since(startTime).Seconds()) + 30
-				increaseExpression := fmt.Sprintf(`sum(increase(http_server_duration_milliseconds_count{service_name=%s}[%ds]))`, strconv.Quote(config.ServiceName), window)
-				if increase, err := queryPrometheus(client, config.PrometheusURL, increaseExpression); err == nil && increase > 0 {
+				increaseExpression := fmt.Sprintf(`sum(increase(http_server_duration_milliseconds_count{service_name=%s}[%ds]))`, quotedService, window)
+				if increase, err := queryPrometheus(obsClient, config.PrometheusURL, increaseExpression); err == nil && increase > 0 {
 					check.Value = increase
+				}
+			}
+			if check.Value <= 0 && targetMetricModernBeforeErr == nil {
+				if afterModern, err := queryPrometheus(obsClient, config.PrometheusURL, targetMetricModernExpression); err == nil {
+					if afterModern-targetMetricModernBefore > 0 {
+						check.Value = afterModern - targetMetricModernBefore
+						lastMetric = afterModern
+					} else {
+						window := int(time.Since(startTime).Seconds()) + 30
+						modernIncreaseExpr := fmt.Sprintf(`sum(increase(http_server_request_duration_seconds_count{service_name=%s}[%ds]))`, quotedService, window)
+						if increase, err := queryPrometheus(obsClient, config.PrometheusURL, modernIncreaseExpr); err == nil && increase > 0 {
+							check.Value = increase
+						}
+					}
 				}
 			}
 			if check.Value > 0 {
@@ -350,7 +477,7 @@ func Run(config Config) Report {
 		check := Check{Name: "target service trace", Scope: "target", Status: "missing"}
 		traceDeadline := time.Now().Add(config.SettleTimeout)
 		for {
-			count, err := queryTempoCorrelation(client, config.TempoURL, config.ServiceName, token)
+			count, err := queryTempoCorrelation(obsClient, config.TempoURL, config.ServiceName, token)
 			if err != nil {
 				check.Status = "unavailable"
 				check.Detail = err.Error()
@@ -381,7 +508,7 @@ func Run(config Config) Report {
 		check := Check{Name: "target service log", Scope: "target", Status: "missing"}
 		logDeadline := time.Now().Add(config.SettleTimeout)
 		for {
-			count, err := queryLokiCorrelation(client, config.LokiURL, config.ServiceName, token)
+			count, err := queryLokiCorrelation(obsClient, config.LokiURL, config.ServiceName, token)
 			if err != nil {
 				check.Status = "unavailable"
 				check.Detail = err.Error()
@@ -416,10 +543,39 @@ func Run(config Config) Report {
 		CorrelationID:      token,
 		Checks:             checks,
 		TotalRequests:      totalRequests,
+		FailedRequests:     failedRequests,
 		DurationElapsed:    durationElapsed,
 		RPS:                rps,
 		StatusDistribution: statusDist,
 		Concurrency:        config.Concurrency,
+		Latency:            latencyStats,
+	}
+}
+
+func computeLatencyStats(samples []float64, total int, minMS, maxMS, sumMS float64) *LatencyStats {
+	if total == 0 || len(samples) == 0 {
+		return nil
+	}
+	sorted := make([]float64, len(samples))
+	copy(sorted, samples)
+	slices.Sort(sorted)
+	percentile := func(p float64) float64 {
+		idx := int(math.Ceil(p*float64(len(sorted)))) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(sorted) {
+			idx = len(sorted) - 1
+		}
+		return sorted[idx]
+	}
+	return &LatencyStats{
+		MinMS:  minMS,
+		MeanMS: sumMS / float64(total),
+		P50MS:  percentile(0.50),
+		P95MS:  percentile(0.95),
+		P99MS:  percentile(0.99),
+		MaxMS:  maxMS,
 	}
 }
 

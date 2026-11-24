@@ -148,3 +148,134 @@ func TestRunSendsCorrelationTraceparentOnlyOnce(t *testing.T) {
 		t.Fatalf("expected exactly one request to carry the correlation traceparent, got %d", got)
 	}
 }
+
+func TestRunSkipTelemetryCollectsLatencyWithoutBackends(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		time.Sleep(2 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	report := Run(Config{
+		URL:           app.URL,
+		Method:        http.MethodPost,
+		SkipTelemetry: true,
+		Requests:      10,
+		Concurrency:   4,
+		PrometheusURL: "http://127.0.0.1:1",
+		TempoURL:      "http://127.0.0.1:1",
+		LokiURL:       "http://127.0.0.1:1",
+	})
+	if !report.OK || !report.TargetVerified {
+		t.Fatalf("expected local smoke to pass, got %#v", report)
+	}
+	if report.TotalRequests != 10 {
+		t.Fatalf("TotalRequests = %d, want 10", report.TotalRequests)
+	}
+	if report.Latency == nil {
+		t.Fatal("expected Latency stats")
+	}
+	if !(report.Latency.MinMS <= report.Latency.P50MS && report.Latency.P50MS <= report.Latency.P95MS && report.Latency.P95MS <= report.Latency.P99MS && report.Latency.P99MS <= report.Latency.MaxMS) {
+		t.Fatalf("latency percentiles out of order: %#v", report.Latency)
+	}
+	if report.Latency.MeanMS <= 0 {
+		t.Fatalf("expected MeanMS > 0, got %#v", report.Latency)
+	}
+}
+
+func TestRunTransientErrorsDoNotAbortStressRun(t *testing.T) {
+	var hits atomic.Int64
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		if n == 1 {
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	report := Run(Config{
+		URL:           app.URL,
+		SkipTelemetry: true,
+		Duration:      200 * time.Millisecond,
+		Concurrency:   4,
+	})
+	if report.FailedRequests == 0 {
+		t.Fatalf("expected FailedRequests > 0, got %#v", report)
+	}
+	if report.TotalRequests < 2 {
+		t.Fatalf("expected workers to continue after transient error, got TotalRequests=%d", report.TotalRequests)
+	}
+	if report.OK {
+		t.Fatalf("expected report.OK == false when FailedRequests > 0")
+	}
+}
+
+func TestRunSupportsModernOTelHTTPMetricName(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer app.Close()
+
+	calls := map[string]int{}
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expr := r.URL.Query().Get("query")
+		calls[expr]++
+		val := "0"
+		if strings.Contains(expr, "otelcol_receiver_accepted_") || strings.Contains(expr, "http_server_request_duration_seconds_count") {
+			if calls[expr] > 1 {
+				val = "2"
+			} else {
+				val = "1"
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[{"value":[1,"` + val + `"]}]}}`))
+	}))
+	defer prom.Close()
+
+	tempo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.URL.Path, "/api/traces/")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"batches":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},"scopeSpans":[{"spans":[{"attributes":[{"key":"http.request.header.x_request_id","value":{"stringValue":"` + token + `"}}]}]}]}]}`))
+	}))
+	defer tempo.Close()
+
+	loki := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[{}]}}`))
+	}))
+	defer loki.Close()
+
+	report := Run(Config{URL: app.URL, PrometheusURL: prom.URL, TempoURL: tempo.URL, LokiURL: loki.URL, ServiceName: "checkout", Requests: 2})
+	if !report.OK {
+		t.Fatalf("expected modern OTel metric name to pass smoke, got %#v", report)
+	}
+}
+
+func TestRunExtremeRateLimitDoesNotPanic(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	report := Run(Config{
+		URL:           app.URL,
+		SkipTelemetry: true,
+		Requests:      2,
+		RateLimit:     1e9,
+	})
+	if !report.OK || report.TotalRequests != 2 {
+		t.Fatalf("expected extreme rate limit to succeed, got %#v", report)
+	}
+}
