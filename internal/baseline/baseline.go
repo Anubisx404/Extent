@@ -27,6 +27,8 @@ type LoadProfile struct {
 	ThroughputRPS   float64 `json:"throughputRps,omitempty"`
 	TotalRequests   int     `json:"totalRequests,omitempty"`
 	ErrorRate       float64 `json:"errorRate,omitempty"`
+	P50LatencyMS    float64 `json:"p50LatencyMs,omitempty"`
+	P95LatencyMS    float64 `json:"p95LatencyMs,omitempty"`
 	P99LatencyMS    float64 `json:"p99LatencyMs,omitempty"`
 }
 
@@ -161,7 +163,10 @@ func Compare(before, after Snapshot) Comparison {
 	}
 	comparison.Summary = fmt.Sprintf("Before vs after: %d comparable measured dimension(s); unavailable or unknown dimensions were excluded.", comparable)
 	if before.LoadProfile != nil && after.LoadProfile != nil {
-		if after.LoadProfile.P99LatencyMS > before.LoadProfile.P99LatencyMS*1.2 || after.LoadProfile.ErrorRate > before.LoadProfile.ErrorRate+0.05 {
+		latencyRegressed := before.LoadProfile.P99LatencyMS > 0 && after.LoadProfile.P99LatencyMS > before.LoadProfile.P99LatencyMS*1.2
+		errorRegressed := after.LoadProfile.ErrorRate > before.LoadProfile.ErrorRate+0.05
+		throughputRegressed := before.LoadProfile.ThroughputRPS > 0 && after.LoadProfile.ThroughputRPS < before.LoadProfile.ThroughputRPS*0.8
+		if latencyRegressed || errorRegressed || throughputRegressed {
 			comparison.LoadRegression = true
 		}
 		status := "stable"

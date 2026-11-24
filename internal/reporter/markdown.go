@@ -63,7 +63,20 @@ func RenderMarkdown(report Report, window string) string {
 		b.WriteString(fmt.Sprintf("- Duration: %s\n", report.SoakResult.DurationElapsed.Round(time.Millisecond)))
 		b.WriteString(fmt.Sprintf("- Concurrency: %d\n", concurrency))
 		b.WriteString(fmt.Sprintf("- Total requests: %d\n", report.SoakResult.TotalRequests))
+		if report.SoakResult.FailedRequests > 0 {
+			b.WriteString(fmt.Sprintf("- Failed requests (transport): %d\n", report.SoakResult.FailedRequests))
+		}
 		b.WriteString(fmt.Sprintf("- Throughput: %.1f RPS\n", report.SoakResult.RPS))
+		if report.SoakResult.Latency != nil {
+			b.WriteString(fmt.Sprintf("- Latency (client): p50=%.1fms, p95=%.1fms, p99=%.1fms (min=%.1fms, mean=%.1fms, max=%.1fms)\n",
+				report.SoakResult.Latency.P50MS,
+				report.SoakResult.Latency.P95MS,
+				report.SoakResult.Latency.P99MS,
+				report.SoakResult.Latency.MinMS,
+				report.SoakResult.Latency.MeanMS,
+				report.SoakResult.Latency.MaxMS,
+			))
+		}
 		if len(report.SoakResult.StatusDistribution) > 0 {
 			b.WriteString("\n### Status Distribution\n\n")
 			b.WriteString("| Status Code | Count |\n")

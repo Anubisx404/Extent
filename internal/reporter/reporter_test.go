@@ -266,11 +266,11 @@ func TestRenderHTMLStructureAndEscaping(t *testing.T) {
 		"web&lt;script&gt;alert(1)&lt;/script&gt;",
 		"A test &lt;summary&gt; message &amp; more",
 		"/search?q=&lt;test&gt;",
-		"<table>",
+		"<table class=\"stack\">",
 		"<thead>",
 		"<tbody>",
-		"<tr><td>HTTP p95 latency</td><td>measured</td><td>42.500 milliseconds</td><td>target</td><td>prometheus</td></tr>",
-		"<details>",
+		"<tr><td data-label=\"Metric\">HTTP p95 latency</td><td data-label=\"Status\"><span class=\"chip chip-measured\"><span class=\"st st-measured\" aria-hidden=\"true\"></span>measured</span></td><td data-label=\"Value\" class=\"mono\">42.500 milliseconds</td><td data-label=\"Scope\" class=\"mono\">target</td><td data-label=\"Source\" class=\"mono\">prometheus</td></tr>",
+		"<details open>",
 		"<summary>Trace Span Details (1)</summary>",
 		"search&lt;handler&gt;",
 		"<summary>Log Events (1)</summary>",
@@ -414,5 +414,82 @@ func TestRenderMarkdownAndHTMLWithSoakResult(t *testing.T) {
 	}
 	if !strings.Contains(htmlOut, "Load profile (stable)") {
 		t.Fatalf("missing LoadSummary in html:\n%s", htmlOut)
+	}
+}
+
+func TestBuildLocalSkipTelemetryProducesBenchmarkAndBaselineSnapshot(t *testing.T) {
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	report := Build(Config{
+		ServiceName:   "local-api",
+		TargetURL:     app.URL + "/health",
+		SoakDuration:  150 * time.Millisecond,
+		Concurrency:   2,
+		RateLimit:     0,
+		SkipTelemetry: true,
+		PrometheusURL: "http://127.0.0.1:1",
+	})
+	if !report.OK {
+		t.Fatalf("expected local report OK, got warnings=%#v", report.Warnings)
+	}
+	if report.SlowestPath != "/health" {
+		t.Fatalf("SlowestPath = %q, want /health", report.SlowestPath)
+	}
+	if report.Measurements["httpP95"].Status != "measured" || report.Measurements["httpP95"].Source != "soak" {
+		t.Fatalf("expected measured soak httpP95, got %#v", report.Measurements["httpP95"])
+	}
+	if report.Measurements["soakP99"].Status != "measured" || report.Measurements["soakP50"].Status != "measured" {
+		t.Fatalf("expected soakP50 and soakP99 measurements, got %#v", report.Measurements)
+	}
+
+	snap := SnapshotFromReport(report)
+	if snap.Measurements["httpP95"].Status != "measured" || snap.Measurements["soakThroughput"].Status != "measured" {
+		t.Fatalf("snapshot missing soak/http measurements: %#v", snap.Measurements)
+	}
+	if snap.LoadProfile == nil || snap.LoadProfile.P99LatencyMS <= 0 || snap.LoadProfile.P50LatencyMS <= 0 {
+		t.Fatalf("expected LoadProfile with true client latency percentiles, got %#v", snap.LoadProfile)
+	}
+}
+
+func TestBuildRunsSoakBeforePrometheusQueriesAndSupportsModernSemconv(t *testing.T) {
+	var order []string
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, "app")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer app.Close()
+
+	prom := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, "prom")
+		q := r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(q, "http_server_request_duration_seconds_bucket") {
+			w.Write([]byte(prometheusVector("http_route", "/orders", "250.0")))
+			return
+		}
+		w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+	}))
+	defer prom.Close()
+
+	report := Build(Config{
+		PrometheusURL: prom.URL,
+		ServiceName:   "checkout",
+		SoakDuration:  100 * time.Millisecond,
+		TargetURL:     app.URL,
+		Concurrency:   1,
+		RateLimit:     0,
+	})
+	if !report.OK {
+		t.Fatalf("expected report OK with modern semconv fallback, got %#v", report.Warnings)
+	}
+	if report.SlowestPath != "/orders" || report.SlowestPathLatency != 250.0 {
+		t.Fatalf("SlowestPath=%q latency=%v, want /orders 250.0", report.SlowestPath, report.SlowestPathLatency)
+	}
+	if len(order) < 2 || order[0] != "app" {
+		t.Fatalf("expected soak traffic before Prometheus queries, got order=%v", order)
 	}
 }

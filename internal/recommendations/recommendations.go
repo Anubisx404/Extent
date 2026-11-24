@@ -17,6 +17,10 @@ type Input struct {
 	QueueLag             float64
 	MemoryGrowthBytesSec float64
 	TraceExamples        []string
+	SoakErrorRate        float64
+	SoakP50MS            float64
+	SoakP95MS            float64
+	SoakP99MS            float64
 }
 
 type Result struct {
@@ -89,6 +93,27 @@ func Synthesize(input Input) Result {
 			Title:      "Potential memory leak detected",
 			Evidence:   fmt.Sprintf("Positive memory growth slope (%.0f bytes/sec) observed during observation window.", input.MemoryGrowthBytesSec),
 			Suggestion: "Profile heap allocations with pprof, check for unbounded cache growth or unclosed connection handles.",
+		})
+	}
+	if input.SoakErrorRate > 0.01 {
+		items = append(items, Item{
+			Title:      "Elevated HTTP error rate under load",
+			Evidence:   fmt.Sprintf("%.1f%% of synthetic requests failed or returned HTTP >= 400.", input.SoakErrorRate*100),
+			Suggestion: "Inspect error logs and handler panic/timeout paths before increasing concurrency.",
+		})
+	}
+	if input.SoakP95MS >= 500 {
+		items = append(items, Item{
+			Title:      "High endpoint latency under load",
+			Evidence:   fmt.Sprintf("Client-observed p95 latency reached %.1f ms under load.", input.SoakP95MS),
+			Suggestion: "Profile hot request handlers, downstream calls, and connection pool contention.",
+		})
+	}
+	if input.SoakP50MS > 0 && input.SoakP99MS >= input.SoakP50MS*4 && input.SoakP99MS >= 50 {
+		items = append(items, Item{
+			Title:      "Tail latency amplification (p99/p50 skew)",
+			Evidence:   fmt.Sprintf("p99 latency (%.1f ms) is %.1fx p50 (%.1f ms).", input.SoakP99MS, input.SoakP99MS/input.SoakP50MS, input.SoakP50MS),
+			Suggestion: "Check GC pauses, lock contention, or queueing delays under concurrent load.",
 		})
 	}
 	if len(items) == 0 {

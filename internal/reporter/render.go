@@ -24,6 +24,9 @@ func orderedMeasurements(m map[string]Measurement) []namedMeasurement {
 		{key: "soakThroughput", label: "Soak throughput"},
 		{key: "soakTotalRequests", label: "Soak total requests"},
 		{key: "soakErrorRate", label: "Soak error rate"},
+		{key: "soakP50", label: "Soak p50 latency"},
+		{key: "soakP95", label: "Soak p95 latency"},
+		{key: "soakP99", label: "Soak p99 latency"},
 	}
 	seen := map[string]bool{}
 	var result []namedMeasurement

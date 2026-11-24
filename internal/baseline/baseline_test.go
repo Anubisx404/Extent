@@ -175,3 +175,28 @@ func TestCompareLoadProfilesAndDetectRegression(t *testing.T) {
 		t.Fatal("expected error for negative concurrency")
 	}
 }
+
+func TestCompareLoadProfilesGuardsZeroBaselineAndDetectsThroughputDrop(t *testing.T) {
+	zeroBefore := Snapshot{
+		ServiceName:  "checkout",
+		Measurements: map[string]Measurement{"traceCount": {Status: "measured", Value: 1, Unit: "count"}},
+		LoadProfile:  &LoadProfile{ThroughputRPS: 100, ErrorRate: 0, P99LatencyMS: 0},
+	}
+	afterWithLatency := Snapshot{
+		ServiceName:  "checkout",
+		Measurements: map[string]Measurement{"traceCount": {Status: "measured", Value: 1, Unit: "count"}},
+		LoadProfile:  &LoadProfile{ThroughputRPS: 95, ErrorRate: 0, P99LatencyMS: 20},
+	}
+	if cmp := Compare(zeroBefore, afterWithLatency); cmp.LoadRegression {
+		t.Fatalf("zero baseline P99 must not trigger latency regression: %#v", cmp)
+	}
+
+	afterSlow := Snapshot{
+		ServiceName:  "checkout",
+		Measurements: map[string]Measurement{"traceCount": {Status: "measured", Value: 1, Unit: "count"}},
+		LoadProfile:  &LoadProfile{ThroughputRPS: 70, ErrorRate: 0, P99LatencyMS: 10},
+	}
+	if cmp := Compare(zeroBefore, afterSlow); !cmp.LoadRegression {
+		t.Fatalf("expected >20%% throughput drop to trigger LoadRegression: %#v", cmp)
+	}
+}

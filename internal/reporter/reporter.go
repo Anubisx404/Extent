@@ -30,6 +30,9 @@ type Config struct {
 	TargetURL       string
 	Concurrency     int
 	RateLimit       float64
+	Method          string
+	RequestTimeout  time.Duration
+	SkipTelemetry   bool
 }
 
 type Report struct {
@@ -84,58 +87,153 @@ func Build(config Config) Report {
 	client := &http.Client{Timeout: 5 * time.Second}
 	var warnings []string
 
-	slowest, latencyErr := queryFirst(client, config.PrometheusURL, `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=`+service+`}[`+window+`])) by (le, http_route, route, path)))`)
-	if latencyErr != nil {
-		warnings = append(warnings, "app latency query failed: "+latencyErr.Error())
-	}
-	db, dbErr := queryFirst(client, config.PrometheusURL, `histogram_quantile(0.95, sum(rate(db_client_operation_duration_seconds_bucket{service_name=`+service+`}[`+window+`])) by (le))`)
-	if dbErr != nil {
-		warnings = append(warnings, "db latency query failed: "+dbErr.Error())
-	}
-	containerCPU, containerErr := queryFirst(client, config.PrometheusURL, `sum(rate(container_cpu_usage_seconds_total{name!=""}[`+window+`]))`)
-	if containerErr != nil {
-		warnings = append(warnings, "container cpu query failed: "+containerErr.Error())
-	}
-	hostCPU, hostErr := queryFirst(client, config.PrometheusURL, `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[`+window+`]))`)
-	if hostErr != nil {
-		warnings = append(warnings, "host cpu query failed: "+hostErr.Error())
+	var soakRes *smoke.Report
+	soakErrorRate := 0.0
+	if config.SoakDuration > 0 && config.TargetURL != "" {
+		res := smoke.Run(smoke.Config{
+			URL:            config.TargetURL,
+			Method:         config.Method,
+			RequestTimeout: config.RequestTimeout,
+			SkipTelemetry:  true,
+			ServiceName:    config.ServiceName,
+			Duration:       config.SoakDuration,
+			Concurrency:    config.Concurrency,
+			RateLimit:      config.RateLimit,
+		})
+		soakRes = &res
+		if !res.OK {
+			warnings = append(warnings, "soak test traffic generation encountered failures")
+		}
+		errCount := res.FailedRequests
+		for code, count := range res.StatusDistribution {
+			if code >= 400 {
+				errCount += count
+			}
+		}
+		denom := res.TotalRequests + res.FailedRequests
+		if denom > 0 {
+			soakErrorRate = float64(errCount) / float64(denom)
+		}
 	}
 
-	if latencyErr == nil && !slowest.Found {
-		warnings = append(warnings, "service HTTP latency metric is missing; expected http_server_duration_milliseconds_bucket for the target service")
-	}
-	path := firstNonEmpty(slowest.Metric["route"], slowest.Metric["path"], slowest.Metric["http_route"])
-	dbShare := 0.0
-	summary := summarize(path, slowest.Value, dbShare, containerCPU.Value, hostCPU.Value)
-	report := Report{
-		OK:                 len(warnings) == 0,
-		ServiceName:        config.ServiceName,
-		Summary:            summary,
-		SlowestPath:        path,
-		SlowestPathLatency: slowest.Value,
-		DBLatency:          db.Value,
-		DBShare:            dbShare,
-		ContainerCPU:       containerCPU.Value,
-		HostCPU:            hostCPU.Value,
-		Warnings:           warnings,
-		Measurements: map[string]Measurement{
+	var report Report
+	if config.SkipTelemetry {
+		path := "/"
+		if parsed, err := url.Parse(config.TargetURL); err == nil && parsed.Path != "" {
+			path = parsed.Path
+		}
+		measurements := map[string]Measurement{}
+		slowestLatency := 0.0
+		summary := "No soak benchmark was run."
+		if soakRes != nil {
+			measurements["soakThroughput"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "rps", Value: soakRes.RPS}
+			measurements["soakTotalRequests"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "requests", Value: float64(soakRes.TotalRequests)}
+			measurements["soakErrorRate"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "ratio", Value: soakErrorRate}
+			if soakRes.Latency != nil {
+				slowestLatency = soakRes.Latency.P95MS
+				measurements["httpP95"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P95MS}
+				measurements["soakP50"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P50MS}
+				measurements["soakP95"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P95MS}
+				measurements["soakP99"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P99MS}
+				summary = fmt.Sprintf("Local HTTP benchmark for %s (%s): p50 %.1f ms, p95 %.1f ms, p99 %.1f ms at %.1f RPS (%.2f%% error rate).",
+					config.ServiceName, path, soakRes.Latency.P50MS, soakRes.Latency.P95MS, soakRes.Latency.P99MS, soakRes.RPS, soakErrorRate*100)
+			} else {
+				summary = fmt.Sprintf("Local HTTP benchmark for %s (%s): %d requests at %.1f RPS (%.2f%% error rate).",
+					config.ServiceName, path, soakRes.TotalRequests, soakRes.RPS, soakErrorRate*100)
+			}
+		}
+		report = Report{
+			ServiceName:        config.ServiceName,
+			Summary:            summary,
+			SlowestPath:        path,
+			SlowestPathLatency: slowestLatency,
+			Warnings:           warnings,
+			Measurements:       measurements,
+			SoakResult:         soakRes,
+		}
+	} else {
+		slowest, latencyErr := queryFirst(client, config.PrometheusURL, `topk(1, histogram_quantile(0.95, sum(rate(http_server_duration_milliseconds_bucket{service_name=`+service+`}[`+window+`])) by (le, http_route, route, path)))`)
+		if latencyErr == nil && !slowest.Found {
+			modern, modernErr := queryFirst(client, config.PrometheusURL, `topk(1, histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket{service_name=`+service+`}[`+window+`])) by (le, http_route, route, path))) * 1000`)
+			if modernErr == nil && modern.Found {
+				slowest = modern
+			}
+		}
+		if latencyErr != nil {
+			warnings = append(warnings, "app latency query failed: "+latencyErr.Error())
+		}
+		db, dbErr := queryFirst(client, config.PrometheusURL, `histogram_quantile(0.95, sum(rate(db_client_operation_duration_seconds_bucket{service_name=`+service+`}[`+window+`])) by (le))`)
+		if dbErr == nil && !db.Found {
+			dbMS, dbMSErr := queryFirst(client, config.PrometheusURL, `histogram_quantile(0.95, sum(rate(db_client_operation_duration_milliseconds_bucket{service_name=`+service+`}[`+window+`])) by (le)) / 1000`)
+			if dbMSErr == nil && dbMS.Found {
+				db = dbMS
+			}
+		}
+		if dbErr != nil {
+			warnings = append(warnings, "db latency query failed: "+dbErr.Error())
+		}
+		containerCPU, containerErr := queryFirst(client, config.PrometheusURL, `sum(rate(container_cpu_usage_seconds_total{name!=""}[`+window+`]))`)
+		if containerErr != nil {
+			warnings = append(warnings, "container cpu query failed: "+containerErr.Error())
+		}
+		hostCPU, hostErr := queryFirst(client, config.PrometheusURL, `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[`+window+`]))`)
+		if hostErr != nil {
+			warnings = append(warnings, "host cpu query failed: "+hostErr.Error())
+		}
+
+		if latencyErr == nil && !slowest.Found {
+			warnings = append(warnings, "service HTTP latency metric is missing; expected http_server_duration_milliseconds_bucket for the target service")
+		}
+		path := firstNonEmpty(slowest.Metric["route"], slowest.Metric["path"], slowest.Metric["http_route"])
+		dbShare := 0.0
+		summary := summarize(path, slowest.Value, dbShare, containerCPU.Value, hostCPU.Value)
+		measurements := map[string]Measurement{
 			"httpP95":      measurement(slowest, latencyErr, "target", "milliseconds"),
 			"dbP95":        measurement(db, dbErr, "target", "seconds"),
 			"containerCPU": measurement(containerCPU, containerErr, "global", "ratio"),
 			"hostCPU":      measurement(hostCPU, hostErr, "global", "ratio"),
-		},
+		}
+		if soakRes != nil {
+			measurements["soakThroughput"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "rps", Value: soakRes.RPS}
+			measurements["soakTotalRequests"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "requests", Value: float64(soakRes.TotalRequests)}
+			measurements["soakErrorRate"] = Measurement{Status: "measured", Scope: "target", Source: "smoke", Unit: "ratio", Value: soakErrorRate}
+			if soakRes.Latency != nil {
+				measurements["soakP50"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P50MS}
+				measurements["soakP95"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P95MS}
+				measurements["soakP99"] = Measurement{Status: "measured", Scope: "target", Source: "soak", Unit: "milliseconds", Value: soakRes.Latency.P99MS}
+			}
+		}
+		report = Report{
+			ServiceName:        config.ServiceName,
+			Summary:            summary,
+			SlowestPath:        path,
+			SlowestPathLatency: slowest.Value,
+			DBLatency:          db.Value,
+			DBShare:            dbShare,
+			ContainerCPU:       containerCPU.Value,
+			HostCPU:            hostCPU.Value,
+			Warnings:           warnings,
+			Measurements:       measurements,
+			SoakResult:         soakRes,
+		}
+		if config.IncludeEvidence || config.LokiURL != "" || config.TempoURL != "" {
+			report.Evidence = evidence.Collect(evidence.Config{PrometheusURL: config.PrometheusURL, LokiURL: config.LokiURL, TempoURL: config.TempoURL, Window: config.Window, ServiceName: config.ServiceName})
+			report.Warnings = append(report.Warnings, report.Evidence.Warnings...)
+		}
 	}
-	if config.IncludeEvidence || config.LokiURL != "" || config.TempoURL != "" {
-		report.Evidence = evidence.Collect(evidence.Config{PrometheusURL: config.PrometheusURL, LokiURL: config.LokiURL, TempoURL: config.TempoURL, Window: config.Window, ServiceName: config.ServiceName})
-		report.Warnings = append(report.Warnings, report.Evidence.Warnings...)
-		report.OK = len(report.Warnings) == 0
-	}
+
 	var rateLimit429, dbPoolWaiting, queueLag, memoryGrowth float64
 	if report.Evidence.Saturation != nil {
 		rateLimit429 = report.Evidence.Saturation.RateLimit429Count
 		dbPoolWaiting = report.Evidence.Saturation.DBPoolWaiting
 		queueLag = report.Evidence.Saturation.QueueLag
 		memoryGrowth = report.Evidence.Saturation.MemoryGrowthBytesSec
+	}
+	var soakP50, soakP95, soakP99 float64
+	if soakRes != nil && soakRes.Latency != nil {
+		soakP50 = soakRes.Latency.P50MS
+		soakP95 = soakRes.Latency.P95MS
+		soakP99 = soakRes.Latency.P99MS
 	}
 	report.Recommendations = recommendations.Synthesize(recommendations.Input{
 		SlowestPath:          report.SlowestPath,
@@ -148,55 +246,12 @@ func Build(config Config) Report {
 		DBPoolWaiting:        dbPoolWaiting,
 		QueueLag:             queueLag,
 		MemoryGrowthBytesSec: memoryGrowth,
+		SoakErrorRate:        soakErrorRate,
+		SoakP50MS:            soakP50,
+		SoakP95MS:            soakP95,
+		SoakP99MS:            soakP99,
 	}).Items
-	if config.SoakDuration > 0 && config.TargetURL != "" {
-		soakRes := smoke.Run(smoke.Config{
-			URL:           config.TargetURL,
-			PrometheusURL: config.PrometheusURL,
-			TempoURL:      config.TempoURL,
-			LokiURL:       config.LokiURL,
-			ServiceName:   config.ServiceName,
-			Duration:      config.SoakDuration,
-			Concurrency:   config.Concurrency,
-			RateLimit:     config.RateLimit,
-			SettleTimeout: 2 * time.Second,
-		})
-		report.SoakResult = &soakRes
-		if !soakRes.OK {
-			report.Warnings = append(report.Warnings, "soak test traffic generation encountered failures")
-		}
-		var errCount int
-		for code, count := range soakRes.StatusDistribution {
-			if code >= 400 {
-				errCount += count
-			}
-		}
-		errorRate := 0.0
-		if soakRes.TotalRequests > 0 {
-			errorRate = float64(errCount) / float64(soakRes.TotalRequests)
-		}
-		report.Measurements["soakThroughput"] = Measurement{
-			Status: "measured",
-			Scope:  "target",
-			Source: "smoke",
-			Unit:   "rps",
-			Value:  soakRes.RPS,
-		}
-		report.Measurements["soakTotalRequests"] = Measurement{
-			Status: "measured",
-			Scope:  "target",
-			Source: "smoke",
-			Unit:   "requests",
-			Value:  float64(soakRes.TotalRequests),
-		}
-		report.Measurements["soakErrorRate"] = Measurement{
-			Status: "measured",
-			Scope:  "target",
-			Source: "smoke",
-			Unit:   "ratio",
-			Value:  errorRate,
-		}
-	}
+
 	if config.BaselinePath != "" {
 		if before, err := baseline.Load(config.BaselinePath); err == nil {
 			after := SnapshotFromReport(report)
@@ -204,12 +259,13 @@ func Build(config Config) Report {
 			report.Comparison = &comparison
 		} else {
 			report.Warnings = append(report.Warnings, "baseline compare failed: "+err.Error())
-			report.OK = false
 		}
 	}
-	if report.SlowestPath == "" && len(report.Evidence.Traces) > 0 {
+
+	if !config.SkipTelemetry && report.SlowestPath == "" && len(report.Evidence.Traces) > 0 {
 		report.Summary = fmt.Sprintf("Telemetry contains %d target-service trace(s) and %d span(s), but the service HTTP latency metric is unavailable; verify the Collector Prometheus exporter and metric family.", len(report.Evidence.Traces), len(report.Evidence.Spans))
 	}
+	report.OK = len(report.Warnings) == 0
 	return report
 }
 
@@ -293,6 +349,11 @@ func missingTraceLogs(result evidence.Result) int {
 
 func SnapshotFromReport(report Report) baseline.Snapshot {
 	measurements := map[string]baseline.Measurement{}
+	for name, m := range report.Measurements {
+		if m.Status == "measured" && m.Unit != "" {
+			measurements[name] = baseline.Measurement{Status: "measured", Value: m.Value, Unit: m.Unit}
+		}
+	}
 	tempoStatus := evidenceStatus(report.Evidence, "tempo")
 	if tempoStatus != "unavailable" && tempoStatus != "unknown" {
 		measurements["traceCount"] = baseline.Measurement{Status: "measured", Value: float64(len(report.Evidence.Traces)), Unit: "count"}
@@ -327,17 +388,30 @@ func SnapshotFromReport(report Report) baseline.Snapshot {
 		ServiceName:  report.ServiceName,
 		Measurements: measurements,
 	}
-	if report.SoakResult != nil && report.SoakResult.TotalRequests > 0 {
-		var errCount int
+	if report.SoakResult != nil && (report.SoakResult.TotalRequests > 0 || report.SoakResult.FailedRequests > 0) {
+		errCount := report.SoakResult.FailedRequests
 		for code, count := range report.SoakResult.StatusDistribution {
 			if code >= 400 {
 				errCount += count
 			}
 		}
-		errorRate := float64(errCount) / float64(report.SoakResult.TotalRequests)
+		denom := report.SoakResult.TotalRequests + report.SoakResult.FailedRequests
+		errorRate := 0.0
+		if denom > 0 {
+			errorRate = float64(errCount) / float64(denom)
+		}
 		concurrency := report.SoakResult.Concurrency
 		if concurrency <= 0 {
 			concurrency = 1
+		}
+		var p50, p95, p99 float64
+		p99 = report.SlowestPathLatency
+		if report.SoakResult.Latency != nil {
+			p50 = report.SoakResult.Latency.P50MS
+			p95 = report.SoakResult.Latency.P95MS
+			if report.SoakResult.Latency.P99MS > 0 {
+				p99 = report.SoakResult.Latency.P99MS
+			}
 		}
 		snapshot.LoadProfile = &baseline.LoadProfile{
 			DurationSeconds: report.SoakResult.DurationElapsed.Seconds(),
@@ -345,7 +419,9 @@ func SnapshotFromReport(report Report) baseline.Snapshot {
 			ThroughputRPS:   report.SoakResult.RPS,
 			TotalRequests:   report.SoakResult.TotalRequests,
 			ErrorRate:       errorRate,
-			P99LatencyMS:    report.SlowestPathLatency,
+			P50LatencyMS:    p50,
+			P95LatencyMS:    p95,
+			P99LatencyMS:    p99,
 		}
 	}
 	return snapshot
